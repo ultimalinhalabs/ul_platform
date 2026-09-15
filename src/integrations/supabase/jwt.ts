@@ -23,7 +23,7 @@ export class InvalidTokenError extends Error {}
  */
 export async function verifySupabaseAccessToken(token: string): Promise<SupabaseClaims> {
   try {
-    const { payload } = await jwtVerify(token, secret);
+    const { payload } = await jwtVerify(token, secret, { algorithms: ["HS256"] });
     const claims = supabaseClaimsSchema.parse(payload);
 
     const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
