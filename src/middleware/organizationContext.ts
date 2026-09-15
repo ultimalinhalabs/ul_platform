@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { findActiveMembership } from "../modules/memberships/service.js";
 import { ForbiddenError, UnauthorizedError } from "../shared/errors.js";
+import { paramString } from "../shared/params.js";
 
 /**
  * Resolves and validates the Organization context for a request from a
@@ -15,8 +16,7 @@ export function requireOrganizationMembership(paramName = "organizationId") {
         throw new UnauthorizedError();
       }
 
-      const rawParam = req.params[paramName];
-      const organizationId = Array.isArray(rawParam) ? rawParam[0] : rawParam;
+      const organizationId = paramString(req.params[paramName]);
       if (!organizationId) {
         throw new ForbiddenError(`Missing :${paramName} route parameter`);
       }

@@ -26,3 +26,9 @@ export class NotFoundError extends AppError {
     super(404, "NOT_FOUND", message);
   }
 }
+
+export class ConflictError extends AppError {
+  constructor(message = "Conflicting resource state") {
+    super(409, "CONFLICT", message);
+  }
+}
