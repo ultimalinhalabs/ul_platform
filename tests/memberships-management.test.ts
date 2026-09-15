@@ -30,6 +30,7 @@ test("the organization's last active owner cannot be demoted or removed", async 
           membershipId: ownerMembership!.membershipId,
           status: "suspended",
           actorUserId: owner.id,
+          actorRoleKey: "OWNER",
         }),
       ConflictError,
     );
@@ -40,6 +41,7 @@ test("the organization's last active owner cannot be demoted or removed", async 
           organizationId: org.id,
           membershipId: ownerMembership!.membershipId,
           actorUserId: owner.id,
+          actorRoleKey: "OWNER",
         }),
       ConflictError,
     );
@@ -61,6 +63,7 @@ test("a second owner allows the first to be demoted, and a non-owner can be remo
       userId: secondUser.id,
       roleKey: "OWNER",
       actorUserId: owner.id,
+          actorRoleKey: "OWNER",
     });
 
     const rows = await listMembershipsForOrganization(org.id);
@@ -72,6 +75,7 @@ test("a second owner allows the first to be demoted, and a non-owner can be remo
       membershipId: firstOwnerMembership.membershipId,
       roleKey: "STAFF",
       actorUserId: owner.id,
+          actorRoleKey: "OWNER",
     });
     assert.ok(demoted);
 
@@ -81,6 +85,7 @@ test("a second owner allows the first to be demoted, and a non-owner can be remo
       organizationId: org.id,
       membershipId: firstOwnerMembership.membershipId,
       actorUserId: owner.id,
+          actorRoleKey: "OWNER",
     });
 
     const remaining = await listMembershipsForOrganization(org.id);
@@ -107,6 +112,7 @@ test("createMembership rejects an unknown user or an unknown role", async () => 
           userId: "00000000-0000-0000-0000-000000000000",
           roleKey: "STAFF",
           actorUserId: owner.id,
+          actorRoleKey: "OWNER",
         }),
       NotFoundError,
     );
@@ -118,6 +124,7 @@ test("createMembership rejects an unknown user or an unknown role", async () => 
           userId: owner.id,
           roleKey: "NOT_A_ROLE",
           actorUserId: owner.id,
+          actorRoleKey: "OWNER",
         }),
       NotFoundError,
     );

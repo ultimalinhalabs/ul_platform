@@ -2,6 +2,7 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { memberships, organizations, roles, users } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
+import { assertOwnerRoleChangeAllowed } from "../authorization/service.js";
 import { getRoleByKey } from "../roles/service.js";
 import { ConflictError, NotFoundError } from "../../shared/errors.js";
 
@@ -83,7 +84,10 @@ export async function createMembership(input: {
   roleKey: string;
   status?: "active" | "invited" | "suspended";
   actorUserId: string;
+  actorRoleKey: string;
 }) {
+  assertOwnerRoleChangeAllowed(input.actorRoleKey, [input.roleKey]);
+
   const [targetUser] = await db.select().from(users).where(eq(users.id, input.userId)).limit(1);
   if (!targetUser) {
     throw new NotFoundError(
@@ -122,6 +126,7 @@ export async function updateMembership(input: {
   roleKey?: string;
   status?: "active" | "invited" | "suspended";
   actorUserId: string;
+  actorRoleKey: string;
 }) {
   const [current] = await db
     .select({ id: memberships.id, roleKey: roles.key, status: memberships.status, roleId: memberships.roleId })
@@ -130,6 +135,8 @@ export async function updateMembership(input: {
     .where(and(eq(memberships.id, input.membershipId), eq(memberships.organizationId, input.organizationId)))
     .limit(1);
   if (!current) throw new NotFoundError("Membership not found");
+
+  assertOwnerRoleChangeAllowed(input.actorRoleKey, [current.roleKey, input.roleKey]);
 
   const nextRole = input.roleKey ? await getRoleByKey(input.roleKey) : undefined;
   const wasActiveOwner = current.roleKey === "OWNER" && current.status === "active";
@@ -172,6 +179,7 @@ export async function removeMembership(input: {
   organizationId: string;
   membershipId: string;
   actorUserId: string;
+  actorRoleKey: string;
 }) {
   const [current] = await db
     .select({ id: memberships.id, roleKey: roles.key, status: memberships.status })
@@ -180,6 +188,8 @@ export async function removeMembership(input: {
     .where(and(eq(memberships.id, input.membershipId), eq(memberships.organizationId, input.organizationId)))
     .limit(1);
   if (!current) throw new NotFoundError("Membership not found");
+
+  assertOwnerRoleChangeAllowed(input.actorRoleKey, [current.roleKey]);
 
   if (current.roleKey === "OWNER" && current.status === "active") {
     const ownerRole = await getRoleByKey("OWNER");

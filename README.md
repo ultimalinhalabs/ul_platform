@@ -44,7 +44,8 @@ src/
   routes/v1/     versioned HTTP routes
   shared/        cross-cutting types/helpers (errors, response envelope)
 scripts/         one-off/dev-only scripts (schema inspection)
-tests/           node:test suite (database/seed, authorization, identity, customer, organizations, memberships)
+tests/           node:test suite (database/seed, authorization, identity, customer, organizations, memberships,
+                 roles/permissions catalog, role-assignment security)
 ```
 
 ## API — v1
@@ -58,3 +59,13 @@ tests/           node:test suite (database/seed, authorization, identity, custom
 - `PATCH /v1/organizations/:organizationId/memberships/:membershipId` — requires `membership.update`; changing `roleKey` additionally requires `role.assign`.
 - `DELETE /v1/organizations/:organizationId/memberships/:membershipId` — requires `membership.remove`.
 - All membership role/status changes are blocked from demoting or removing an organization's last active OWNER (`409 CONFLICT`).
+- Assigning the `OWNER` role to a membership, or changing/removing a membership that is currently an active `OWNER`, additionally requires the *actor's own* role to already be `OWNER` — `role.assign` alone (held by `ADMIN` too) is not enough. Prevents an `ADMIN` from minting a new `OWNER` (self or ally) or neutralizing an existing one. Enforced in the service layer (`assertOwnerRoleChangeAllowed`), not just at the route.
+- `GET /v1/roles` / `GET /v1/roles/:roleKey` — the platform's global role catalog (`OWNER`/`ADMIN`/`MANAGER`/`STAFF`); detail includes the role's granted permission keys. Auth only, no organization context — roles are global, not per-tenant data.
+- `GET /v1/permissions` / `GET /v1/permissions/:permissionKey` — the platform's global permission catalog. Same auth model as roles.
+
+### Role assignment vs. role definition
+
+Two different things are easy to conflate:
+
+- **Role assignment** — "which role does this membership have?" Already existed (`PATCH .../memberships/:id` + `role.assign`), audited in this step (see above), tenant-isolated (a membership can only be reached through its own organization's route — cross-org membership IDs 404, not leak).
+- **Role definition** — "what permissions does the `ADMIN` role grant?" (i.e. editing `role_permissions` itself). **Deliberately not built in this step.** There's no `role.manage` permission and no endpoint to mutate `role_permissions`. Reasoning: (1) there's no `PLATFORM_ADMIN` actor distinct from organization members yet — an `OWNER`/`ADMIN` role_permissions editor today could only be gated by an org-scoped permission, which would let an organization owner redefine what `ADMIN` means *platform-wide*, breaking the platform/organization boundary (see CLAUDE.md §11); (2) v1 only needs 4 fixed, platform-defined roles (§2 "global roles + global permissions", not custom roles). Revisit when a real platform-admin context exists (Console phase).

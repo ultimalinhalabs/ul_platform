@@ -94,6 +94,7 @@ organizationsRouter.post(
       organizationId: req.membership!.organizationId,
       ...body,
       actorUserId: req.auth!.userId,
+      actorRoleKey: req.membership!.roleKey,
     });
     ok(res, membership, 201);
   }),
@@ -118,6 +119,7 @@ organizationsRouter.patch(
       membershipId: paramString(req.params.membershipId)!,
       ...body,
       actorUserId: req.auth!.userId,
+      actorRoleKey: req.membership!.roleKey,
     });
     ok(res, membership);
   }),
@@ -133,6 +135,7 @@ organizationsRouter.delete(
       organizationId: req.membership!.organizationId,
       membershipId: paramString(req.params.membershipId)!,
       actorUserId: req.auth!.userId,
+      actorRoleKey: req.membership!.roleKey,
     });
     ok(res, { deleted: true });
   }),

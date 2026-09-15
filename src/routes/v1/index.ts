@@ -2,9 +2,13 @@ import { Router } from "express";
 import { healthRouter } from "./health.js";
 import { meRouter } from "./me.js";
 import { organizationsRouter } from "./organizations.js";
+import { permissionsRouter } from "./permissions.js";
+import { rolesRouter } from "./roles.js";
 
 export const v1Router = Router();
 
 v1Router.use(healthRouter);
 v1Router.use(meRouter);
 v1Router.use(organizationsRouter);
+v1Router.use(rolesRouter);
+v1Router.use(permissionsRouter);
