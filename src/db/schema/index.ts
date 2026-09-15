@@ -5,6 +5,7 @@ export * from "./entitlements.js";
 export * from "./memberships.js";
 export * from "./organizations.js";
 export * from "./permissions.js";
+export * from "./planEntitlements.js";
 export * from "./plans.js";
 export * from "./profiles.js";
 export * from "./roles.js";

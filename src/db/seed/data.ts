@@ -41,6 +41,45 @@ export const ROLES = [
   { key: "STAFF", name: "Staff", description: "Read-only baseline access." },
 ] as const;
 
+/**
+ * Deliberately minimal — just enough to prove Application → Plan →
+ * Entitlement works, not a real commercial catalog. `key` is only
+ * unique per application, so "BUSINESS" is intentionally reused across
+ * several applications here to exercise that scoping. UL_CONSOLE has no
+ * plans (an internal tool, not something Organizations subscribe to) —
+ * also intentional, an application with zero plans is a valid state.
+ */
+export const PLANS = [
+  { applicationKey: "NA_PISTA", key: "STARTER", name: "Starter", description: "Entry-level Na Pista plan." },
+  { applicationKey: "NA_PISTA", key: "BUSINESS", name: "Business", description: "Full-featured Na Pista plan." },
+  { applicationKey: "MICHA_EXPRESS", key: "BASIC", name: "Basic", description: "Entry-level Micha Express plan." },
+  { applicationKey: "MICHA_EXPRESS", key: "BUSINESS", name: "Business", description: "Full-featured Micha Express plan." },
+  { applicationKey: "FOI", key: "BUSINESS", name: "Business", description: "Foi's standard business plan." },
+  { applicationKey: "QUALE_A_DICA", key: "BUSINESS", name: "Business", description: "Qualé a Dica?!'s standard business plan." },
+  { applicationKey: "HOJE_TEM", key: "COMMUNITY", name: "Community", description: "Hoje Tem!'s baseline plan." },
+] as const;
+
+/**
+ * Mixed value types (boolean, integer) deliberately, to prove the jsonb
+ * `value` column represents both without a separate type column. Keys
+ * are generic commercial concepts (`*.max`, `*.enabled`), not product
+ * internals — see planEntitlements.ts for why there's no product-aware
+ * validation of these keys.
+ */
+export const PLAN_ENTITLEMENTS = [
+  { applicationKey: "NA_PISTA", planKey: "STARTER", key: "catalog.enabled", value: true },
+  { applicationKey: "NA_PISTA", planKey: "STARTER", key: "products.max", value: 100 },
+  { applicationKey: "NA_PISTA", planKey: "BUSINESS", key: "catalog.enabled", value: true },
+  { applicationKey: "NA_PISTA", planKey: "BUSINESS", key: "products.max", value: 1000 },
+  { applicationKey: "NA_PISTA", planKey: "BUSINESS", key: "advanced_reports.enabled", value: true },
+  { applicationKey: "MICHA_EXPRESS", planKey: "BASIC", key: "transactions.max", value: 1000 },
+  { applicationKey: "MICHA_EXPRESS", planKey: "BUSINESS", key: "transactions.max", value: 100000 },
+  { applicationKey: "MICHA_EXPRESS", planKey: "BUSINESS", key: "priority_support.enabled", value: true },
+  { applicationKey: "FOI", planKey: "BUSINESS", key: "deliveries.max", value: 5000 },
+  { applicationKey: "QUALE_A_DICA", planKey: "BUSINESS", key: "conversations.max", value: 10000 },
+  { applicationKey: "HOJE_TEM", planKey: "COMMUNITY", key: "members.max", value: 50 },
+] as const;
+
 export const ROLE_PERMISSIONS: Record<(typeof ROLES)[number]["key"], string[]> = {
   OWNER: [
     "organization.read",

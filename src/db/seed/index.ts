@@ -1,8 +1,15 @@
 import { sql } from "drizzle-orm";
 import { pathToFileURL } from "node:url";
 import { db } from "../index.js";
-import { applications, permissions, rolePermissions, roles } from "../schema/index.js";
-import { APPLICATIONS, PERMISSIONS, ROLES, ROLE_PERMISSIONS } from "./data.js";
+import { applications, permissions, planEntitlements, plans, rolePermissions, roles } from "../schema/index.js";
+import {
+  APPLICATIONS,
+  PERMISSIONS,
+  PLAN_ENTITLEMENTS,
+  PLANS,
+  ROLES,
+  ROLE_PERMISSIONS,
+} from "./data.js";
 
 /**
  * Idempotent: safe to run any number of times. Upserts by unique key so a
@@ -39,6 +46,7 @@ export async function seed() {
 
     const roleIdByKey = new Map(roleRows.map((r) => [r.key, r.id]));
     const permIdByKey = new Map(permRows.map((p) => [p.key, p.id]));
+    const appIdByKey = new Map(appRows.map((a) => [a.key, a.id]));
 
     const rolePermissionRows = Object.entries(ROLE_PERMISSIONS).flatMap(([roleKey, permKeys]) => {
       const roleId = roleIdByKey.get(roleKey);
@@ -59,11 +67,54 @@ export async function seed() {
         });
     }
 
+    const planRows = await tx
+      .insert(plans)
+      .values(
+        PLANS.map((p) => {
+          const applicationId = appIdByKey.get(p.applicationKey);
+          if (!applicationId) {
+            throw new Error(`Seed error: application "${p.applicationKey}" was not upserted`);
+          }
+          return { applicationId, key: p.key, name: p.name, description: p.description };
+        }),
+      )
+      .onConflictDoUpdate({
+        target: [plans.applicationId, plans.key],
+        set: { name: sql`excluded.name`, description: sql`excluded.description`, updatedAt: sql`now()` },
+      })
+      .returning({ id: plans.id, applicationId: plans.applicationId, key: plans.key });
+
+    const planIdByAppIdAndKey = new Map(planRows.map((p) => [`${p.applicationId}:${p.key}`, p.id]));
+
+    const planEntitlementRows = PLAN_ENTITLEMENTS.map((pe) => {
+      const applicationId = appIdByKey.get(pe.applicationKey);
+      if (!applicationId) {
+        throw new Error(`Seed error: application "${pe.applicationKey}" was not upserted`);
+      }
+      const planId = planIdByAppIdAndKey.get(`${applicationId}:${pe.planKey}`);
+      if (!planId) {
+        throw new Error(`Seed error: plan "${pe.applicationKey}/${pe.planKey}" was not upserted`);
+      }
+      return { planId, key: pe.key, value: pe.value };
+    });
+
+    if (planEntitlementRows.length > 0) {
+      await tx
+        .insert(planEntitlements)
+        .values(planEntitlementRows)
+        .onConflictDoUpdate({
+          target: [planEntitlements.planId, planEntitlements.key],
+          set: { value: sql`excluded.value`, updatedAt: sql`now()` },
+        });
+    }
+
     return {
       applications: appRows.length,
       permissions: permRows.length,
       roles: roleRows.length,
       rolePermissions: rolePermissionRows.length,
+      plans: planRows.length,
+      planEntitlements: planEntitlementRows.length,
     };
   });
 }
