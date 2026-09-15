@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { applicationsRouter } from "./applications.js";
 import { healthRouter } from "./health.js";
 import { meRouter } from "./me.js";
 import { organizationsRouter } from "./organizations.js";
@@ -12,3 +13,4 @@ v1Router.use(meRouter);
 v1Router.use(organizationsRouter);
 v1Router.use(rolesRouter);
 v1Router.use(permissionsRouter);
+v1Router.use(applicationsRouter);

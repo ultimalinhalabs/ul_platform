@@ -6,6 +6,7 @@ export const APPLICATIONS = [
   { key: "MICHA_EXPRESS", name: "Micha Express", description: "Payments, treasury and digital wallet." },
   { key: "FOI", name: "Foi", description: "Logistics, transport and delivery." },
   { key: "QUALE_A_DICA", name: "Qualé a Dica?!", description: "WhatsApp/conversational automation." },
+  { key: "HOJE_TEM", name: "Hoje Tem", description: "Última Linha ecosystem application." },
 ] as const;
 
 /**
