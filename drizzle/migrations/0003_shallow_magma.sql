@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "subscriptions_org_plan_not_canceled_unique" ON "subscriptions" USING btree ("organization_id","plan_id") WHERE "subscriptions"."status" <> 'canceled';
