@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { apiKeysRouter } from "./apiKeys.js";
 import { applicationsRouter } from "./applications.js";
 import { entitlementsRouter } from "./entitlements.js";
 import { healthRouter } from "./health.js";
@@ -20,3 +21,4 @@ v1Router.use(applicationsRouter);
 v1Router.use(plansRouter);
 v1Router.use(subscriptionsRouter);
 v1Router.use(entitlementsRouter);
+v1Router.use(apiKeysRouter);

@@ -46,7 +46,7 @@ src/
 scripts/         one-off/dev-only scripts (schema inspection)
 tests/           node:test suite (database/seed, authorization, identity, customer, organizations, memberships,
                  roles/permissions catalog, role-assignment security, applications catalog, plans/plan entitlements,
-                 subscriptions, organization application access, effective entitlement resolution)
+                 subscriptions, organization application access, effective entitlement resolution, API keys)
 ```
 
 ## API — v1
@@ -72,6 +72,10 @@ tests/           node:test suite (database/seed, authorization, identity, custom
 - `GET /v1/organizations/:organizationId/applications` — the applications this organization currently has effective access to, derived live from its non-canceled subscriptions (no parallel `organization_applications` table). Requires `subscription.read` (it's a view over subscription data, not the global registry).
 - `GET /v1/organizations/:organizationId/applications/:applicationKey/entitlements` — the Effective Entitlements resolved from the organization's current subscription for that application (see below). `404` if the application itself is unknown; `200` with `subscription: null, entitlements: []` if the organization has no granting subscription (that's a real, meaningful answer, not an error). Requires `entitlement.read` (existing permission, granted to `OWNER`/`ADMIN`/`MANAGER`, not `STAFF`) — deliberately not `subscription.read`: this answers "what capability values do we have", a different question from "what subscriptions do we have".
 - `GET /v1/organizations/:organizationId/applications/:applicationKey/entitlements/:key` — one specific entitlement's effective value. `404` uniformly when there's no value for that key — whether because there's no granting subscription at all or because the plan simply doesn't include that key; the caller doesn't need to distinguish those.
+- `POST /v1/organizations/:organizationId/api-keys` — creates an organization-scoped API key for `{ applicationKey, expiresAt? }`; requires `api_key.manage` (OWNER-only). Response includes the raw secret **exactly this once**.
+- `GET /v1/organizations/:organizationId/api-keys` / `GET .../api-keys/:keyId` — metadata only, never the secret; requires `api_key.read` (`OWNER`/`ADMIN`).
+- `POST /v1/organizations/:organizationId/api-keys/:keyId/revoke` — status change to `REVOKED`, never a delete; requires `api_key.manage`.
+- `GET /v1/organizations/:organizationId/applications/:applicationKey/entitlements[/:key]` (above) additionally accepts a service credential (API key) whose own stored application+organization match the URL — see "API Keys" below. Every other endpoint in this API remains human-only.
 
 ### Applications are a registry, not a module boundary
 
@@ -139,6 +143,42 @@ Five questions the platform can now answer (`modules/entitlements/service.ts`):
 **Resolution is synchronous, not materialized.** Every read re-derives the answer via a live join (`subscriptions → plans → plan_entitlements`); nothing is written to the reserved `entitlements` table, there's no cache, no Redis, no background worker. This is a deliberate v1 choice for correctness and simplicity — see the `entitlements` table note above for when materialization might become worth revisiting.
 
 **Permission ≠ Entitlement, restated concretely:** a user can hold `subscription.read` (a *Permission* — "may this actor view subscriptions") while their organization's plan has `feature.analytics = false` (an *Entitlement* — "does this organization's plan include analytics"). Neither implies the other, and neither is evaluated in terms of the other. The full chain this platform is converging toward is `Authentication → Application context → Organization context → Membership → Permission → Application access → Effective entitlement → Business operation` — this step establishes the last two links' *resolution mechanism* (`hasApplicationAccess`, `getEffectiveEntitlements`); wiring them into an actual authorization gate for a business operation is future work, not done here.
+
+### API Keys: human authentication vs. machine authentication
+
+Two authentication classes now exist and are never conflated:
+
+```
+Human                                    Machine
+User → Supabase JWT → identity           Service/Application → API Key → identity
+  → Organization membership                → Application context (always)
+  → Permission                              → Organization context (when the key is org-scoped)
+                                             → credential scope IS the authorization
+```
+
+A machine credential never impersonates a human: there is no fake `users` row, no fake `memberships` row for a service. `authenticate` populates exactly one of `req.auth` (human) or `req.service` (machine) per request — every existing human-only route keeps working completely unchanged, because it checks `req.auth`/`req.membership`, which simply stay unset for a service request; nothing needed to be retrofitted to explicitly reject services.
+
+**Credential format:** `ulk_<id>.<secret>` — `ulk_` makes it unambiguously distinguishable from a Supabase JWT at a glance (a JWT is 3 dot-separated segments with no fixed prefix); `id` is the row's UUID primary key, safe to expose (it's how the row is found — O(1) via the PK index — not the secret itself); `secret` is 256 bits from `crypto.randomBytes`, base64url-encoded. **The secret is returned exactly once, at creation, and only its SHA-256 hash is ever persisted** — plain SHA-256, deliberately not bcrypt/scrypt/argon2: those algorithms' expensive work factor exists to slow brute-forcing a *low-entropy* human password, and a 256-bit CSPRNG secret is already computationally infeasible to brute-force regardless of hash speed, so a slow KDF would only tax every authenticated request for no real security gain. Comparison uses `crypto.timingSafeEqual`.
+
+**Ownership/scope model:** an API key is always application-scoped (`applicationId`, resolved from the existing Application registry — no new application table) and *optionally* organization-scoped (`organizationId`, nullable). v1 only implements creation of the organization-scoped form — "Organization ABC's NA_PISTA integration" — via `POST /organizations/:id/api-keys`, authorized the same way as everything else (`api_key.manage`, an existing-style permission, OWNER-only in the seed). The platform-level form (`organizationId = null`, e.g. "the NA_PISTA backend itself") is schema-supported but **deliberately has no creation endpoint in v1**: there is no `PLATFORM_ADMIN` actor yet, and gating platform-wide credential issuance behind an *organization's* permission would let any OWNER mint a credential that isn't scoped to their organization at all — a privilege-escalation shape identical to the one already closed for role assignment. Provisioning a platform-level key today is a controlled manual/future-Console operation, not an HTTP-reachable one — this is a documented gap, not an oversight.
+
+**Client-supplied scope is never trusted.** `organizationId` and `applicationId` for a service request come only from the stored credential row, resolved during verification — never from a request body, header, or route param. The one endpoint pair opened to service credentials (`middleware/entitlementAccess.ts`) checks the URL's `:organizationId`/`:applicationKey` *against* the credential's stored values and 403s on any mismatch; a key can never be used to reach a different organization or application than the one it was minted for.
+
+**Lifecycle:** `status` is a small explicit `ACTIVE`/`REVOKED` — no larger state machine. Expiration is derived (`expiresAt <= now()`) at verification time rather than a third persisted status, so nothing needs a background sweep when a key's clock runs out. Revocation is a status change, never a delete (auditability). Rotation isn't automated in v1; the supported operational pattern is manual: create the new key → deploy its secret → verify it works → revoke the old one — the model doesn't block having two active keys for the same organization+application simultaneously during that window.
+
+**Every verification failure looks identical from the outside** — malformed token, unknown id, wrong secret, revoked, expired, or the owning Application not `ACTIVE` all produce the same generic `401` (`modules/apiKeys/service.ts`'s `verifyApiKeyToken`), so a response can never be used to probe whether a given key id exists, was revoked, or belongs to someone else.
+
+**Application lifecycle interaction:** a key whose Application is `SUSPENDED`/`DEPRECATED` stops authenticating immediately — checked live at verification time, nothing is mutated on the key rows themselves when an application's status changes. This is one clear rule (mirroring "no new subscriptions for a non-`ACTIVE` application"), not a cascading state machine.
+
+**No `scopes` column.** v1's only scope dimension is *which application, which organization* — both already columns. A fine-grained action-level scope array would be unenforced schema decoration until there's an actual machine-consumable business endpoint that needs finer authorization than "this credential's identity matches this URL" — today there's exactly one such endpoint (Effective Entitlements, read-only), so credential scope alone is sufficient authorization for it. Add real scopes when a second, differently-permissioned machine endpoint actually needs them.
+
+**Credential authentication ≠ Application access ≠ Effective Entitlement — still three separate questions**, not conflated by this step: possessing a valid API key answers only "is this a legitimate credential for application X (and organization Y, if scoped)". It does not by itself mean the organization has a Subscription, nor what that Subscription's Plan grants — a service calling the entitlements endpoint gets exactly the same `subscription: null, entitlements: []` a human would see if the organization isn't subscribed. No blanket "every API key requires a subscription" rule was invented.
+
+**No `lastUsedAt`.** Tracking it would mean a database write on every authenticated request; doing that without unnecessary load needs an async/queued path this platform deliberately doesn't have (no Redis, no queues — see below). Omitted rather than half-implemented.
+
+**Audit:** `api_key.created` and `api_key.revoked` are recorded (keyId, applicationId, organizationId, actor); no raw secret, hash, or bearer credential ever appears in an audit row, and successful authentications are not audited (matching "don't audit every GET").
+
+**Deliberately future work, not built here:** automated rotation, rate limiting (API-key authentication is a natural future rate-limit target), OAuth client-credentials flow, and any concept of a "service account" richer than an (application, organization) pair — should the ecosystem ever need something between "one plain credential" and "a full IdP client."
 
 ### Role assignment vs. role definition
 

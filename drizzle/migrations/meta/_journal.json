@@ -29,6 +29,13 @@
       "when": 1789516625762,
       "tag": "0003_shallow_magma",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789522467461,
+      "tag": "0004_silent_king_cobra",
+      "breakpoints": true
     }
   ]
 }

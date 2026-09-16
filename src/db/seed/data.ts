@@ -32,6 +32,8 @@ export const PERMISSIONS = [
   { key: "subscription.manage", description: "Create/change an organization's subscriptions." },
   { key: "entitlement.read", description: "View an organization's entitlements." },
   { key: "audit.read", description: "View an organization's audit log." },
+  { key: "api_key.manage", description: "Create/revoke an organization's API keys." },
+  { key: "api_key.read", description: "View an organization's API key metadata (never secrets)." },
 ] as const;
 
 export const ROLES = [
@@ -96,6 +98,8 @@ export const ROLE_PERMISSIONS: Record<(typeof ROLES)[number]["key"], string[]> =
     "subscription.manage",
     "entitlement.read",
     "audit.read",
+    "api_key.manage",
+    "api_key.read",
   ],
   ADMIN: [
     "organization.read",
@@ -110,6 +114,7 @@ export const ROLE_PERMISSIONS: Record<(typeof ROLES)[number]["key"], string[]> =
     "subscription.read",
     "entitlement.read",
     "audit.read",
+    "api_key.read",
   ],
   MANAGER: [
     "organization.read",
