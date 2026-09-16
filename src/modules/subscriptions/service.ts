@@ -4,8 +4,13 @@ import { applications, organizations, plans, subscriptions } from "../../db/sche
 import { recordAuditEvent } from "../audit/service.js";
 import { ConflictError, NotFoundError } from "../../shared/errors.js";
 
-/** Any status other than `canceled` is a live relationship — see subscriptions.ts. */
-const NOT_CANCELED = ne(subscriptions.status, "canceled");
+/**
+ * Any status other than `canceled` is a live relationship — see
+ * subscriptions.ts. This is the ONE canonical "grants access" predicate;
+ * reuse it (import it) rather than re-deriving `ne(status, "canceled")`
+ * elsewhere — modules/entitlements/service.ts does exactly that.
+ */
+export const NOT_CANCELED = ne(subscriptions.status, "canceled");
 
 const SUBSCRIPTION_ROW = {
   id: subscriptions.id,
@@ -235,11 +240,10 @@ export async function listOrganizationApplications(organizationId: string) {
 }
 
 /**
- * The first piece of "Effective Access" (see CLAUDE.md's Application ->
- * Plan -> Subscription -> Effective Access chain). Deliberately not
- * paired yet with a `getEffectiveEntitlements(organizationId,
- * applicationKey)` — resolving Plan Entitlements into the (already
- * schema-reserved) `entitlements` table is the next step, not this one.
+ * "Does this organization have access" — the boolean half of Effective
+ * Access. See modules/entitlements/service.ts for the value-resolving
+ * half (`getEffectiveEntitlements`), which reuses this same NOT_CANCELED
+ * predicate rather than re-deriving it.
  */
 export async function hasApplicationAccess(
   organizationId: string,

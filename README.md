@@ -46,7 +46,7 @@ src/
 scripts/         one-off/dev-only scripts (schema inspection)
 tests/           node:test suite (database/seed, authorization, identity, customer, organizations, memberships,
                  roles/permissions catalog, role-assignment security, applications catalog, plans/plan entitlements,
-                 subscriptions, organization application access)
+                 subscriptions, organization application access, effective entitlement resolution)
 ```
 
 ## API — v1
@@ -70,6 +70,8 @@ tests/           node:test suite (database/seed, authorization, identity, custom
 - `GET /v1/organizations/:organizationId/subscriptions` / `GET .../subscriptions/:subscriptionId` — requires `subscription.read`. Detail is tenant-safe by construction (`WHERE id = ... AND organization_id = ...` in one query) — a subscription from another organization 404s, it never leaks via a bare ID lookup.
 - `PATCH /v1/organizations/:organizationId/subscriptions/:subscriptionId` — body `{ "status": "canceled" }` (the only transition v1 supports); requires `subscription.manage`. Canceling an already-canceled subscription is `409`, not a silent no-op. Subscriptions are never deleted — cancellation is a status change, preserving history.
 - `GET /v1/organizations/:organizationId/applications` — the applications this organization currently has effective access to, derived live from its non-canceled subscriptions (no parallel `organization_applications` table). Requires `subscription.read` (it's a view over subscription data, not the global registry).
+- `GET /v1/organizations/:organizationId/applications/:applicationKey/entitlements` — the Effective Entitlements resolved from the organization's current subscription for that application (see below). `404` if the application itself is unknown; `200` with `subscription: null, entitlements: []` if the organization has no granting subscription (that's a real, meaningful answer, not an error). Requires `entitlement.read` (existing permission, granted to `OWNER`/`ADMIN`/`MANAGER`, not `STAFF`) — deliberately not `subscription.read`: this answers "what capability values do we have", a different question from "what subscriptions do we have".
+- `GET /v1/organizations/:organizationId/applications/:applicationKey/entitlements/:key` — one specific entitlement's effective value. `404` uniformly when there's no value for that key — whether because there's no granting subscription at all or because the plan simply doesn't include that key; the caller doesn't need to distinguish those.
 
 ### Applications are a registry, not a module boundary
 
@@ -91,7 +93,7 @@ Three distinctions that are easy to blur:
 
 `plan_entitlements` has no separate "entitlement definitions" catalog table (unlike `permissions`, which backs `role_permissions`): entitlement keys are not a fixed platform vocabulary the way permissions are — products define their own capability keys (`catalog.enabled`, `products.max`, ...) as needed, and a global definitions table would either sit empty or tempt the platform into knowing product-specific semantics it must not know (see CLAUDE.md §10). A `plan_entitlements` row belongs to exactly one plan, and a plan belongs to exactly one application, so a `NA_PISTA` plan cannot end up carrying a `micha_express.*`-style key by cross-referencing a shared table — there is no shared table to cross-reference. `value` is `jsonb` (same choice already made for the `entitlements` table) so booleans, integers and short strings are all representable without a separate type column.
 
-`entitlements` (already in the schema — still not written to by anything) is a *different* table for a *later* step: it will resolve what a specific Organization actually has (materialized from an active Subscription's plan), not what a Plan defines. Do not conflate the two — `plan_entitlements` is the offer's definition, `entitlements` will be the resolved grant. This step deliberately stops at "does this Organization have an active Subscription" (`hasApplicationAccess`, `GET .../applications`) and does not yet materialize *what that Subscription's plan actually grants* into `entitlements` — that's `getEffectiveEntitlements`, intentionally not built here.
+`entitlements` (already in the schema — still not written to by anything, and deliberately still isn't as of this step) is a *different* table reserved for a *possible future* step: a *materialized* copy of Effective Entitlements. Do not conflate the two — `plan_entitlements` is the offer's definition, `entitlements` would be a cached/persisted resolved grant if one is ever needed. Effective Entitlements themselves are implemented (see next section) as a synchronous, unmaterialized resolution — no background job, no cache — precisely so this table could absorb that role later without an architecture change, if a concrete performance or product need ever justifies it.
 
 ### Organization → Subscription → Plan → Application
 
@@ -108,6 +110,35 @@ A `Subscription` is the fact "this Organization has this Plan" — it is the *on
 **At most one non-canceled subscription per (organization, plan)** is a real database constraint (`subscriptions_org_plan_not_canceled_unique`, a partial unique index — `CANCELED` rows are exempt, so history is never blocked). **At most one non-canceled subscription per (organization, *application*)** — the actually-important rule, since two different plans of the same application active at once would make "which plan's entitlements apply?" ambiguous — can't be expressed as a single-table index (Application is only reachable via `plans.applicationId`), so it's enforced transactionally in `createSubscription`: the transaction takes `SELECT ... FOR UPDATE` on the organization row first, serializing concurrent subscription-creation attempts for that organization before the duplicate check runs. Adding an `applicationId` column to `subscriptions` purely to get a database-level constraint for this was deliberately rejected as an unnecessary denormalization.
 
 New subscriptions require the application `ACTIVE` and the plan `ACTIVE` — `SUSPENDED`/`DEPRECATED` applications and `ARCHIVED` plans reject *new* subscriptions (`409`) but never touch subscriptions that already exist; an organization already subscribed keeps access even if the application is later suspended or the plan archived. Canceling a subscription is a status change (`canceled` + `canceledAt`), never a delete — history is preserved, matching how Organizations/Memberships already work.
+
+Worth naming explicitly: **"a subscription grants access" is not the same claim as "the application is currently operationally available."** The former (`status != canceled`) is about the *commercial relationship's* validity and is exactly what's documented above. The latter would be about whether `NA_PISTA` itself is up and reachable right now — the platform has no opinion on that here, doesn't track it, and `applications.status` (`SUSPENDED`/`DEPRECATED`) is a *gate on new subscriptions*, not a live operational-availability signal. No such policy is invented in this step.
+
+### Effective Entitlements: resolving what a subscription actually grants
+
+```
+Application
+   └── Plan
+         └── Plan Entitlement ("products.max" = 1000 — what the offer includes)
+
+Organization
+   └── Subscription (granting, i.e. status != canceled)
+         └── Plan
+               └── Plan Entitlement
+                     └── Effective Entitlement ("this organization's products.max is 1000, right now")
+```
+
+Five questions the platform can now answer (`modules/entitlements/service.ts`):
+1. Does this organization have access to application X? → `hasApplicationAccess` (subscriptions module).
+2. Which subscription grants that access? → the *granting subscription*: by construction (`createSubscription`'s transactional per-application uniqueness check is the only write path for subscriptions) there is at most one non-canceled subscription per (organization, application) today.
+3. Which plan is currently granting that access? → `subscription.planKey` in the resolution result.
+4. Which entitlements does that plan provide? → `plan_entitlements` for that plan.
+5. What is the effective value of entitlement X? → `getEffectiveEntitlement(organizationId, applicationKey, key)`.
+
+**No entitlement-merging engine was built.** Since at most one granting subscription per (organization, application) can exist through the only write path, there's nothing to merge — `getGrantingSubscription` still orders by most-recently-created and takes one row (rather than assuming exactly one) purely so resolution stays deterministic and never crashes if that invariant is ever relaxed later; it is not expected to matter in practice, and no max/min/OR/AND/sum merge rule was invented on the *chance* it might.
+
+**Resolution is synchronous, not materialized.** Every read re-derives the answer via a live join (`subscriptions → plans → plan_entitlements`); nothing is written to the reserved `entitlements` table, there's no cache, no Redis, no background worker. This is a deliberate v1 choice for correctness and simplicity — see the `entitlements` table note above for when materialization might become worth revisiting.
+
+**Permission ≠ Entitlement, restated concretely:** a user can hold `subscription.read` (a *Permission* — "may this actor view subscriptions") while their organization's plan has `feature.analytics = false` (an *Entitlement* — "does this organization's plan include analytics"). Neither implies the other, and neither is evaluated in terms of the other. The full chain this platform is converging toward is `Authentication → Application context → Organization context → Membership → Permission → Application access → Effective entitlement → Business operation` — this step establishes the last two links' *resolution mechanism* (`hasApplicationAccess`, `getEffectiveEntitlements`); wiring them into an actual authorization gate for a business operation is future work, not done here.
 
 ### Role assignment vs. role definition
 
