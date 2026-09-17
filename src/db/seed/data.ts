@@ -36,6 +36,7 @@ export const PERMISSIONS = [
   { key: "api_key.read", description: "View an organization's API key metadata (never secrets)." },
   { key: "webhook.manage", description: "Create/revoke an organization's webhook endpoints." },
   { key: "webhook.read", description: "View an organization's webhook endpoints (never secrets)." },
+  { key: "usage.read", description: "View an organization's recorded usage." },
 ] as const;
 
 /**
@@ -49,6 +50,8 @@ export const PERMISSIONS = [
  */
 export const SERVICE_SCOPES = [
   { key: "event.publish", description: "Publish a platform event on behalf of the credential's application." },
+  { key: "usage.write", description: "Record usage on behalf of the credential's application." },
+  { key: "usage.read", description: "Read usage recorded for the credential's application." },
   { key: "catalog.read", description: "Read catalog data." },
   { key: "catalog.write", description: "Create/update catalog data." },
   { key: "customer.read", description: "Read customer data." },
@@ -68,11 +71,41 @@ export const SERVICE_SCOPES = [
  * never subscribe to or issue integration credentials for.
  */
 export const APPLICATION_SERVICE_SCOPES: Record<string, string[]> = {
-  NA_PISTA: ["event.publish", "catalog.read", "catalog.write", "customer.read"],
-  MICHA_EXPRESS: ["event.publish", "payment.create", "payment.read"],
-  FOI: ["event.publish", "catalog.read"],
-  QUALE_A_DICA: ["event.publish", "catalog.read", "report.generate"],
-  HOJE_TEM: ["event.publish", "report.generate"],
+  NA_PISTA: ["event.publish", "usage.write", "usage.read", "catalog.read", "catalog.write", "customer.read"],
+  MICHA_EXPRESS: ["event.publish", "usage.write", "usage.read", "payment.create", "payment.read"],
+  FOI: ["event.publish", "usage.write", "usage.read", "catalog.read"],
+  QUALE_A_DICA: ["event.publish", "usage.write", "usage.read", "catalog.read", "report.generate"],
+  HOJE_TEM: ["event.publish", "usage.write", "usage.read", "report.generate"],
+};
+
+/**
+ * Global registry of measurable resources (see db/schema/usage.ts). Generic
+ * platform-shaped concepts, not real product telemetry — a product may
+ * eventually need entirely different meters; these exist to prove the
+ * registry + per-application allowlist actually works, exactly like
+ * SERVICE_SCOPES above.
+ */
+export const METERS = [
+  { key: "users", unit: "count", description: "Active users." },
+  { key: "orders", unit: "count", description: "Orders processed." },
+  { key: "transactions", unit: "count", description: "Transactions processed." },
+  { key: "messages", unit: "count", description: "Messages sent." },
+  { key: "storage_bytes", unit: "bytes", description: "Storage consumed." },
+  { key: "api_requests", unit: "requests", description: "API requests made." },
+] as const;
+
+/**
+ * Which METERS each Application may record/query usage against — the
+ * metering equivalent of APPLICATION_SERVICE_SCOPES. Illustrative only
+ * (see METERS above); real per-product meter selection is a product
+ * integration decision, not something UL Platform prescribes.
+ */
+export const APPLICATION_METERS: Record<string, string[]> = {
+  NA_PISTA: ["users", "orders", "storage_bytes", "api_requests"],
+  MICHA_EXPRESS: ["transactions", "storage_bytes", "api_requests"],
+  FOI: ["orders", "api_requests"],
+  QUALE_A_DICA: ["messages", "api_requests"],
+  HOJE_TEM: ["users", "api_requests"],
 };
 
 export const ROLES = [
@@ -141,6 +174,7 @@ export const ROLE_PERMISSIONS: Record<(typeof ROLES)[number]["key"], string[]> =
     "api_key.read",
     "webhook.manage",
     "webhook.read",
+    "usage.read",
   ],
   ADMIN: [
     "organization.read",
@@ -157,6 +191,7 @@ export const ROLE_PERMISSIONS: Record<(typeof ROLES)[number]["key"], string[]> =
     "audit.read",
     "api_key.read",
     "webhook.read",
+    "usage.read",
   ],
   MANAGER: [
     "organization.read",
@@ -164,6 +199,7 @@ export const ROLE_PERMISSIONS: Record<(typeof ROLES)[number]["key"], string[]> =
     "application.read",
     "subscription.read",
     "entitlement.read",
+    "usage.read",
   ],
   STAFF: ["organization.read", "membership.read"],
 };

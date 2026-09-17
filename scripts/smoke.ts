@@ -255,6 +255,101 @@ async function main() {
   check("publish after revoke reports 0 deliveries", r.json?.data?.deliveries === 0);
   check("revoked endpoint received nothing", received.length === 0);
 
+  // --- Usage / Metering ---
+
+  r = await call("GET", "/meters", { token: tokenA });
+  check("GET /meters -> 200", r.status === 200 && Array.isArray(r.json?.data));
+  check("meter registry includes orders", (r.json?.data ?? []).some((m: { key: string }) => m.key === "orders"));
+
+  r = await call("GET", "/applications/NA_PISTA/meters", { token: tokenA });
+  check("GET /applications/:key/meters -> 200", r.status === 200);
+  const naPistaMeterKeys: string[] = (r.json?.data?.meters ?? []).map((m: { key: string }) => m.key);
+  check("NA_PISTA meter allowlist includes orders", naPistaMeterKeys.includes("orders"));
+
+  r = await call("POST", `/organizations/${orgAId}/api-keys`, {
+    token: tokenA,
+    body: { applicationKey: "NA_PISTA", scopes: ["usage.write", "usage.read"] },
+  });
+  check("create usage-scoped API key -> 201", r.status === 201);
+  const usageKeyA: string = r.json?.data?.secret;
+  const usageKeyAId: string = r.json?.data?.id;
+
+  const usageIdempotencyKey = `smoke_usage_evt_${randomUUID()}`;
+  r = await call("POST", `/organizations/${orgAId}/applications/NA_PISTA/usage`, {
+    token: usageKeyA,
+    body: { meterKey: "orders", quantity: 2, idempotencyKey: usageIdempotencyKey },
+  });
+  check("POST usage (record) -> 201", r.status === 201);
+  check("recorded usage quantity is 2", r.json?.data?.quantity === 2);
+  check("recorded usage is not flagged idempotent on first write", r.json?.data?.idempotent === false);
+
+  r = await call("POST", `/organizations/${orgAId}/applications/NA_PISTA/usage`, {
+    token: usageKeyA,
+    body: { meterKey: "orders", quantity: 2, idempotencyKey: usageIdempotencyKey },
+  });
+  check("duplicate POST usage (same idempotency key) -> 200", r.status === 200);
+  check("duplicate usage submission is flagged idempotent", r.json?.data?.idempotent === true);
+
+  r = await call("POST", `/organizations/${orgAId}/applications/NA_PISTA/usage`, {
+    token: usageKeyA,
+    body: { meterKey: "storage_bytes", quantity: 1024, idempotencyKey: `smoke_usage_evt_${randomUUID()}` },
+  });
+  check("POST usage for a second meter -> 201", r.status === 201);
+
+  r = await call("GET", `/organizations/${orgAId}/applications/NA_PISTA/usage/orders`, { token: tokenA });
+  check("GET usage for one meter (human) -> 200", r.status === 200);
+  check("aggregated orders quantity did not double-count the duplicate", r.json?.data?.quantity === 2);
+
+  r = await call("GET", `/organizations/${orgAId}/applications/NA_PISTA/usage`, { token: usageKeyA });
+  check("GET usage list (service, usage.read) -> 200", r.status === 200);
+  const usageMeterKeys: string[] = (r.json?.data?.meters ?? []).map((m: { meter: { key: string } }) => m.meter.key);
+  check(
+    "usage aggregation lists both recorded meters",
+    usageMeterKeys.includes("orders") && usageMeterKeys.includes("storage_bytes"),
+  );
+
+  r = await call(
+    "GET",
+    `/organizations/${orgAId}/applications/NA_PISTA/usage/orders?from=2027-01-01T00:00:00Z&to=2027-01-31T00:00:00Z`,
+    { token: tokenA },
+  );
+  check("empty period returns 200 with zero quantity", r.status === 200 && r.json?.data?.quantity === 0);
+
+  r = await call("POST", `/organizations/${orgAId}/applications/NA_PISTA/usage`, {
+    token: orgBKey,
+    body: { meterKey: "orders", quantity: 1, idempotencyKey: `smoke_usage_evt_${randomUUID()}` },
+  });
+  check("cross-organization usage write rejected -> 403", r.status === 403);
+
+  r = await call("POST", `/organizations/${orgAId}/applications/MICHA_EXPRESS/usage`, {
+    token: usageKeyA,
+    body: { meterKey: "transactions", quantity: 1, idempotencyKey: `smoke_usage_evt_${randomUUID()}` },
+  });
+  check("cross-application usage write rejected -> 403", r.status === 403);
+
+  r = await call("GET", `/organizations/${orgAId}/applications/NA_PISTA/usage`, { token: tokenB });
+  check("cross-organization usage read rejected -> 403", r.status === 403);
+
+  r = await call("POST", `/organizations/${orgAId}/api-keys`, {
+    token: tokenA,
+    body: { applicationKey: "NA_PISTA", scopes: ["catalog.read"] },
+  });
+  const noUsageScopeKey: string = r.json?.data?.secret;
+  r = await call("POST", `/organizations/${orgAId}/applications/NA_PISTA/usage`, {
+    token: noUsageScopeKey,
+    body: { meterKey: "orders", quantity: 1, idempotencyKey: `smoke_usage_evt_${randomUUID()}` },
+  });
+  check("usage write without usage.write scope rejected -> 403", r.status === 403);
+
+  r = await call("POST", `/organizations/${orgAId}/api-keys/${usageKeyAId}/revoke`, { token: tokenA });
+  check("revoke the usage-scoped API key -> 200", r.status === 200 && r.json?.data?.status === "REVOKED");
+
+  r = await call("POST", `/organizations/${orgAId}/applications/NA_PISTA/usage`, {
+    token: usageKeyA,
+    body: { meterKey: "orders", quantity: 1, idempotencyKey: `smoke_usage_evt_${randomUUID()}` },
+  });
+  check("revoked credential can no longer record usage -> 401", r.status === 401);
+
   receiver.close();
   await db.delete(organizations).where(eq(organizations.id, orgAId));
   await db.delete(organizations).where(eq(organizations.id, orgBId));

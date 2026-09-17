@@ -48,7 +48,7 @@ scripts/         one-off/dev-only scripts (schema inspection, live HTTP smoke te
 tests/           node:test suite (database/seed, authorization, identity, customer, organizations, memberships,
                  roles/permissions catalog, role-assignment security, applications catalog, plans/plan entitlements,
                  subscriptions, organization application access, effective entitlement resolution, API keys,
-                 service scopes, webhooks)
+                 service scopes, webhooks, usage/metering)
 ```
 
 ## API — v1
@@ -87,6 +87,10 @@ tests/           node:test suite (database/seed, authorization, identity, custom
 - `POST /v1/organizations/:organizationId/webhooks/:webhookId/revoke` — status change to `REVOKED`, never a delete; requires `webhook.manage`.
 - `POST /v1/organizations/:organizationId/webhooks/:webhookId/test` — fires a synthetic `webhook.test` event at exactly this endpoint (bypassing its subscriptions), reusing the real delivery path; requires `webhook.manage`.
 - `POST /v1/organizations/:organizationId/events` — **service-only**: publishes a platform event `{ type, data }` on behalf of the calling credential's own application/organization, delivering it to every `ACTIVE` webhook endpoint in that organization subscribed to that `type`. Requires the `event.publish` service scope. See "Service Scopes" and "Webhooks" below.
+- `GET /v1/meters` — the full platform meter registry (`key`, `unit`, `description`). Auth-only, same posture as `/v1/service-scopes`.
+- `GET /v1/applications/:applicationKey/meters` — the subset of the registry that application may record/query usage against.
+- `POST /v1/organizations/:organizationId/applications/:applicationKey/usage` — **service-only**: records one usage event `{ meterKey, quantity, occurredAt?, idempotencyKey, metadata? }` for the calling credential's own application/organization. Requires the `usage.write` service scope. Returns `201` for a newly-recorded event, `200` for an idempotent replay of an existing `idempotencyKey` (same body, same row — never a second count). See "Usage / Metering" below.
+- `GET /v1/organizations/:organizationId/applications/:applicationKey/usage` / `GET .../usage/:meterKey` — aggregated usage, optionally bounded by `?from=&to=` (ISO timestamps, either/both omittable). Accepts a human member with `usage.read` **or** a service credential whose own stored application/organization match the URL and which holds the `usage.read` scope. `200` with `quantity: 0` (or `meters: []`) for a range/application with no recorded usage — a real, meaningful empty answer, not an error.
 
 ### Applications are a registry, not a module boundary
 
@@ -259,6 +263,56 @@ The platform transports and governs this event; it never interprets `type`/`data
 **Audit:** `webhook.created` and `webhook.revoked` only — individual delivery attempts are operational data (`webhook_deliveries`), not audit-log events, matching "don't audit every GET"/"don't audit every delivery attempt" (CLAUDE.md §34). No secret, encrypted or otherwise, ever appears in an audit row.
 
 **Deliberately future work, not built here:** automatic retries/backoff/dead-lettering, a queue or worker of any kind, per-event-type payload schemas or a global event-type catalog, webhook secret rotation UX beyond "create new endpoint, revoke old one", and delivery batching.
+
+### Usage / Metering: what actually happened, not billing
+
+Three questions this platform keeps deliberately separate, restated for this step:
+
+```
+Permission   → "What is this actor allowed to do?"        (Role → Permission → Membership)
+Entitlement  → "What does the plan provide?"               (Plan → Plan Entitlement)
+Usage        → "How much has actually been consumed?"      (Usage Event → Aggregation)
+```
+
+```
+Application
+   └── Plan
+         └── Plan Entitlement   ("products.max" = 1000 — what's provided)
+
+Organization
+   └── Usage Event ×N   ("+1 order", "+5000 bytes", ...)
+         └── Aggregation        ("products used: 742 — what's actually happened")
+```
+
+**This step is deliberately small and stops at "record and query".** It does not compute `742 < 1000`, does not reject a usage write because an entitlement would be exceeded, and does not charge for overage. See "Enforcement" below for exactly where the line is drawn and why.
+
+**Meter registry, mirroring Service Scopes exactly.** `meters` (global, seeded: `users`, `orders`, `transactions`, `messages`, `storage_bytes`, `api_requests` — illustrative examples, not real product telemetry) is the measurement-definition equivalent of `service_scopes`; `application_meters` is the per-application allowlist join table, equivalent to `application_service_scopes`. A Meter and a Scope answer different questions and are never coupled to each other — `application_meters` has no foreign key to `service_scopes` or vice versa. Exactly like scopes, there's no HTTP endpoint to register a new meter (no `PLATFORM_ADMIN` yet — see CLAUDE.md §11); this is a controlled seed.
+
+**Usage events are immutable and append-only.** `usage_events` has no update endpoint and nothing in this codebase ever mutates a row after insert. A correction is a new event (e.g. a negative-quantity adjustment), never an edit of history — the same posture already established for audit logs and webhook deliveries.
+
+**Quantity is `numeric(20, 6)`, never `integer` or `double precision`.** Exact decimal storage avoids floating-point drift when many rows are summed, while still allowing fractional quantities a plain integer couldn't represent. The bound (20 total digits, 6 decimal places) is a deliberate ceiling, not unbounded `numeric` — a malformed value can't silently create an unbounded-precision row. The API accepts `quantity` as either a JSON number or a decimal string and always normalizes to a string before it reaches Postgres, since a JSON number is an IEEE-754 double and round-tripping a large/precise value through one would reintroduce exactly the imprecision this column type exists to avoid. Aggregated sums are converted to a plain JS `number` in API responses for ergonomics (matching the spec's own example response shape) — fine for realistic usage magnitudes; a future consumer that needs exact arbitrary-precision totals should read `usage_events.quantity` directly rather than trust the aggregated JSON number.
+
+**No `period` column.** A day, a month, or an arbitrary `from`/`to` range are all always derivable from `occurredAt` at query time (`modules/usage/service.ts`). Persisting a redundant bucket string would duplicate `occurredAt` and still couldn't represent an arbitrary range a persisted bucket doesn't align to. Query ranges are plain `?from=&to=` ISO timestamps — no `period=month` shorthand in v1; a reasonable future addition, not built now.
+
+**Idempotency is a real database constraint, not application-code discipline.** `usage_events_idempotency_unique` is a unique index on `(organizationId, applicationId, meterId, idempotencyKey)`. `recordUsage` does `INSERT ... ON CONFLICT DO NOTHING`, and when the insert conflicts (same key resubmitted), it re-selects and returns the *original* row instead — the caller gets back the same event either way, and the response's `idempotent: true/false` field tells it which happened. This makes concurrent duplicate submissions safe without any application-level locking: Postgres's unique index resolves the race, not this code. A single external event that must fan out into multiple meters (e.g. one order affecting both `orders` and `revenue_cents`) can reuse the same `idempotencyKey` for each — uniqueness is scoped per-meter, not globally per-key, specifically so that's possible.
+
+**Service authentication, mirroring the events-publish pattern exactly.** `POST .../usage` requires `requireServiceOrganizationMatch()` + a new sibling `requireServiceApplicationMatch()` + `requireServiceScope("usage.write")`. `organizationId`/`applicationKey` are read only from the already-authenticated credential's own stored row — never trusted from the URL by themselves; the middleware is what enforces the two actually match. A NA_PISTA credential can no more record `MICHA_EXPRESS`'s usage than it can record a meter `MICHA_EXPRESS` alone is allowed (`application_meters`) — two independent boundaries, both enforced.
+
+**Human + service read, kept as two genuinely separate paths (`middleware/usageAccess.ts`'s `requireUsageReadAccess`).** A human needs an active Membership *and* the `usage.read` permission (granted to `OWNER`/`ADMIN`/`MANAGER`, not `STAFF` — same tier as `entitlement.read`). A service needs its own stored organization+application to match the URL *and* the `usage.read` scope — unlike `requireEntitlementAccess` (built before service scopes existed, where identity-match alone was sufficient), a usage read is additionally scope-gated because a product may reasonably want to record usage without also being able to read it back, or vice versa.
+
+**Enforcement is explicitly out of scope for this step.** The platform can now answer "how much has this organization consumed" and, separately, already answers "what does its plan provide" (Effective Entitlements) — but nothing here combines the two. Recording usage never checks any entitlement, never rejects a write for exceeding a limit, and never triggers an automatic upgrade, block, or grace period. A future enforcement layer can combine `getEffectiveEntitlement` + `getUsageForMeter` (both already synchronous, pure query functions) into a limit check — deliberately not built now, so the platform stays a fact-recorder, not an opinion-haver, about what an organization is "allowed" to consume.
+
+**No billing, ever, from this table alone.** Usage → Pricing → Billing is explicitly a distinct, much later concern (if it's ever built at all) that would need to know a product's commercial rules — UL Platform records the fact of consumption; it does not know or compute what that consumption costs. Micha Express's own financial rules, Na Pista's order volume, and Hoje Tem!'s operational capacity are examples precisely because none of them require the platform to understand any of their internal business logic.
+
+**Lifecycle: usage is history, never rewritten.** Canceling a subscription, archiving a plan, or suspending/deprecating an application never mutates or deletes previously recorded usage — `usage_events.applicationId`/`meterId` are `ON DELETE RESTRICT` (same posture as `api_keys.applicationId`/`plans.applicationId`), and no code path here touches existing rows in response to any of those lifecycle changes. In practice, a suspended application's API keys already stop authenticating entirely (see "API Keys" above) before a usage-write request could ever reach `recordUsage` — this module doesn't re-implement that gate, it relies on the one that already exists.
+
+**Audit: usage events are not audit events.** Usage is high-volume operational data, not a security-sensitive administrative action — recording it is never written to `audit_logs` (matching "don't audit every GET"/"don't audit every delivery attempt", now extended to "don't audit every usage event"). If meter *configuration* (the registry itself) ever becomes mutable in the future, that would be a reasonable thing to audit; recording a fact is not.
+
+**Performance: one composite index, chosen for the one real query shape.** `usage_events_query_idx` on `(organizationId, applicationId, meterId, occurredAt)` directly matches `getUsageForMeter`/`getUsageForApplication`'s access pattern (equality on org+app+meter, range on `occurredAt`); its leftmost prefixes also serve the org-only and org+app-only queries `getUsageForApplication` needs. No separate single-column indexes were added on top of it — a high-volume append-only table gets exactly the indexes its actual queries need, not every combination that could theoretically be queried.
+
+**Aggregation happens at query time, no materialized totals.** Every read re-sums `usage_events` live; there is no cache, no scheduled aggregation job, no Redis counter. This mirrors the same v1 choice already made for Effective Entitlements, for the same reason: correctness first, revisit only if a concrete performance need ever shows up.
+
+**Deliberately future work, not built here:** limit enforcement combining usage with entitlements, overage pricing/billing of any kind, automatic upgrades or blocking, retention/archival policy, partitioning, usage-threshold webhooks (`usage.threshold_reached` is explicitly not implemented — usage and event infrastructure remain separate concerns), and a `period=month`-style query shorthand.
 
 ### Role assignment vs. role definition
 

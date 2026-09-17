@@ -2,8 +2,10 @@ import { sql } from "drizzle-orm";
 import { pathToFileURL } from "node:url";
 import { db } from "../index.js";
 import {
+  applicationMeters,
   applicationServiceScopes,
   applications,
+  meters,
   permissions,
   planEntitlements,
   plans,
@@ -12,8 +14,10 @@ import {
   serviceScopes,
 } from "../schema/index.js";
 import {
+  APPLICATION_METERS,
   APPLICATION_SERVICE_SCOPES,
   APPLICATIONS,
+  METERS,
   PERMISSIONS,
   PLAN_ENTITLEMENTS,
   PLANS,
@@ -153,6 +157,38 @@ export async function seed() {
         });
     }
 
+    const meterRows = await tx
+      .insert(meters)
+      .values(METERS.map((m) => ({ ...m })))
+      .onConflictDoUpdate({
+        target: meters.key,
+        set: { unit: sql`excluded.unit`, description: sql`excluded.description`, updatedAt: sql`now()` },
+      })
+      .returning({ id: meters.id, key: meters.key });
+
+    const meterIdByKey = new Map(meterRows.map((m) => [m.key, m.id]));
+
+    const applicationMeterRows = Object.entries(APPLICATION_METERS).flatMap(([applicationKey, meterKeys]) => {
+      const applicationId = appIdByKey.get(applicationKey);
+      if (!applicationId) {
+        throw new Error(`Seed error: application "${applicationKey}" was not upserted`);
+      }
+      return meterKeys.map((meterKey) => {
+        const meterId = meterIdByKey.get(meterKey);
+        if (!meterId) throw new Error(`Seed error: meter "${meterKey}" was not upserted`);
+        return { applicationId, meterId };
+      });
+    });
+
+    if (applicationMeterRows.length > 0) {
+      await tx
+        .insert(applicationMeters)
+        .values(applicationMeterRows)
+        .onConflictDoNothing({
+          target: [applicationMeters.applicationId, applicationMeters.meterId],
+        });
+    }
+
     return {
       applications: appRows.length,
       permissions: permRows.length,
@@ -162,6 +198,8 @@ export async function seed() {
       planEntitlements: planEntitlementRows.length,
       serviceScopes: serviceScopeRows.length,
       applicationServiceScopes: applicationServiceScopeRows.length,
+      meters: meterRows.length,
+      applicationMeters: applicationMeterRows.length,
     };
   });
 }

@@ -43,6 +43,13 @@
       "when": 1789602113987,
       "tag": "0005_workable_stellaris",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789608366634,
+      "tag": "0006_violet_hydra",
+      "breakpoints": true
     }
   ]
 }
