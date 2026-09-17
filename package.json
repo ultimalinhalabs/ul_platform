@@ -12,7 +12,7 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
     "lint": "eslint .",
-    "test": "node --import tsx --test --test-concurrency=1 tests/seed.test.ts tests/authorization.test.ts tests/identity.test.ts tests/customer.test.ts tests/organizations.test.ts tests/memberships-management.test.ts tests/roles-permissions.test.ts tests/role-assignment-security.test.ts tests/applications.test.ts tests/plans.test.ts tests/subscriptions.test.ts tests/organization-application-access.test.ts tests/effective-entitlements.test.ts tests/api-keys.test.ts tests/service-scopes.test.ts tests/webhooks.test.ts tests/usage.test.ts",
+    "test": "node --import tsx --test --test-concurrency=1 tests/seed.test.ts tests/authorization.test.ts tests/identity.test.ts tests/customer.test.ts tests/organizations.test.ts tests/memberships-management.test.ts tests/roles-permissions.test.ts tests/role-assignment-security.test.ts tests/applications.test.ts tests/plans.test.ts tests/subscriptions.test.ts tests/organization-application-access.test.ts tests/effective-entitlements.test.ts tests/api-keys.test.ts tests/service-scopes.test.ts tests/webhooks.test.ts tests/usage.test.ts tests/application-infrastructure.test.ts tests/service-discovery.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",

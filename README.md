@@ -48,7 +48,7 @@ scripts/         one-off/dev-only scripts (schema inspection, live HTTP smoke te
 tests/           node:test suite (database/seed, authorization, identity, customer, organizations, memberships,
                  roles/permissions catalog, role-assignment security, applications catalog, plans/plan entitlements,
                  subscriptions, organization application access, effective entitlement resolution, API keys,
-                 service scopes, webhooks, usage/metering)
+                 service scopes, webhooks, usage/metering, application environments/endpoints, service discovery/integrations)
 ```
 
 ## API — v1
@@ -91,6 +91,10 @@ tests/           node:test suite (database/seed, authorization, identity, custom
 - `GET /v1/applications/:applicationKey/meters` — the subset of the registry that application may record/query usage against.
 - `POST /v1/organizations/:organizationId/applications/:applicationKey/usage` — **service-only**: records one usage event `{ meterKey, quantity, occurredAt?, idempotencyKey, metadata? }` for the calling credential's own application/organization. Requires the `usage.write` service scope. Returns `201` for a newly-recorded event, `200` for an idempotent replay of an existing `idempotencyKey` (same body, same row — never a second count). See "Usage / Metering" below.
 - `GET /v1/organizations/:organizationId/applications/:applicationKey/usage` / `GET .../usage/:meterKey` — aggregated usage, optionally bounded by `?from=&to=` (ISO timestamps, either/both omittable). Accepts a human member with `usage.read` **or** a service credential whose own stored application/organization match the URL and which holds the `usage.read` scope. `200` with `quantity: 0` (or `meters: []`) for a range/application with no recorded usage — a real, meaningful empty answer, not an error.
+- `GET /v1/applications/:applicationKey/environments` / `GET .../environments/:environmentKey` — an application's registered deployment contexts (`production`/`staging`), with `status`. Auth-only, same posture as `/v1/service-scopes`/`/v1/meters`. No `POST`/`PATCH` here — see "Who may manage platform applications?" below.
+- `GET /v1/applications/:applicationKey/environments/:environmentKey/endpoints` — the network addresses (`type`, `baseUrl`, `status`) that environment exposes. Same auth posture; never returns a secret (there is none to return — endpoints have no credential of their own).
+- `GET /v1/applications/:sourceApplicationKey/integrations` / `GET .../integrations/:targetApplicationKey` — the directional application-to-application integrations registered *from* this application. Same auth posture.
+- `GET /v1/service/discover?target=<applicationKey>&environment=<environmentKey>` — **service-only**: Service Discovery. Resolves to `{ application: { key }, environment, endpoint: { type, baseUrl } }` for the calling credential's own application acting as the *source*. Requires a registered, `ACTIVE` integration from the caller's application to `target`, plus an `ACTIVE` environment and `ACTIVE` endpoint on the target — no service scope is checked here (see "Service Discovery" below for why). Never organization-scoped, never a query param a caller can override.
 
 ### Applications are a registry, not a module boundary
 
@@ -313,6 +317,80 @@ Organization
 **Aggregation happens at query time, no materialized totals.** Every read re-sums `usage_events` live; there is no cache, no scheduled aggregation job, no Redis counter. This mirrors the same v1 choice already made for Effective Entitlements, for the same reason: correctness first, revisit only if a concrete performance need ever shows up.
 
 **Deliberately future work, not built here:** limit enforcement combining usage with entitlements, overage pricing/billing of any kind, automatic upgrades or blocking, retention/archival policy, partitioning, usage-threshold webhooks (`usage.threshold_reached` is explicitly not implemented — usage and event infrastructure remain separate concerns), and a `period=month`-style query shorthand.
+
+### Application Environments, Endpoints, Integrations & Service Discovery
+
+This step answers a fourth, still-separate question, layered on top of everything above:
+
+```
+Application    → "what product is this?"                (Application registry)
+Environment    → "which deployment of it?"               (production / staging)
+Endpoint       → "where do I reach that deployment?"      (a base URL)
+Integration    → "is application A allowed to know about application B at all?"
+Service Scope  → "what may A actually ask B to do?"
+Service Discovery → the lookup that turns the first four into an address
+```
+
+**UL Platform is not an API Gateway.** It never proxies a request between products (CLAUDE.md's discovery prompt §3): `QUALÉ_A_DICA → NA_PISTA` traffic goes directly from one product to the other. UL Platform's only role is to answer, once, "where is NA_PISTA's production API" — the same shape of information as `service_scopes` answers "what may I ask it" and `webhooks` answer "how do I hear when it changes something". None of these three routes traffic; they only carry configuration and authorization *about* traffic that stays direct.
+
+**Environment** (`application_environments`) is a deployment context belonging to exactly one Application — `key` unique per application (mirrors `plans.key`), status `ACTIVE`/`INACTIVE` (no `DRAINING`/`MAINTENANCE`/etc. — a small explicit lifecycle, not a state machine). A local development environment is never registered here; it exists only on a developer's machine and nothing platform-wide needs to resolve it.
+
+**Endpoint** (`application_endpoints`) is a network address one Environment exposes — at most one per `(environment, type)`, a real unique index. `type` is a closed enum (`API` only in v1 — CLAUDE.md's discovery prompt §8 explicitly asks not to pre-invent ten endpoint types for hypothetical future use). URLs are validated server-side (`modules/endpoints/validation.ts`): must be a valid absolute `http(s)` URL, **HTTPS is mandatory in the `production` environment** (never relaxed for convenience — a non-`production` environment may use `http` since it's expected to point at a developer/staging box), no embedded userinfo (`https://user:pass@host` — a URL is a location, never a credential carrier), no fragment.
+
+**No separate `domains` table.** A "domain" would only ever be the host portion of an endpoint's `baseUrl`, derivable by parsing it — an independent row for it would duplicate information already in `application_endpoints` without representing anything new. The objective here is "where is this application's service", not DNS management (CLAUDE.md's discovery prompt §10).
+
+**Integration** (`application_integrations`) is a **directional**, platform-level statement: "Application A is formally registered to communicate with Application B". `A→B` and `B→A` are different rows — creating one never implies the other (enforced by a unique index on the ordered pair `(sourceApplicationId, targetApplicationId)`, not application-code discipline). Deliberately no `organizationId` on this table: v1 keeps integrations platform-level only, per CLAUDE.md's discovery prompt §22 — nothing here has yet needed an organization-specific override of "may A talk to B at all", and inventing that abstraction speculatively was rejected.
+
+**Integration ≠ Authorization.** A registered, `ACTIVE` integration answers exactly one question — "may this pair know about each other at all" — and nothing more. It grants no capability by itself: the actual synchronous API call between the two products still needs the *target's own* Service Scope check, and (where relevant) its own organization-context check. Symmetrically, holding a Service Scope for an application never implies an Integration is registered — Service Discovery checks the integration registry and nothing else (see below); a target's own business endpoint checks its own scope and nothing else. These are two independent gates on two different steps of the same flow, never merged into one check.
+
+**Service Discovery** (`modules/discovery/service.ts`, `GET /v1/service/discover`) is the lookup that ties Environment + Endpoint + Integration together:
+
+```
+authenticate (API key)
+   ↓
+source = req.service.applicationKey   — never a query/body field (§19)
+   ↓
+target application must exist and be ACTIVE           → 404 otherwise
+   ↓
+an ACTIVE Integration source→target must exist         → 403 otherwise
+   ↓
+target's requested Environment must exist and be ACTIVE → 404 otherwise
+   ↓
+target's `API` Endpoint must exist and be ACTIVE        → 404 otherwise
+   ↓
+{ application: { key }, environment, endpoint: { type, baseUrl } }
+```
+
+Two deliberately different rejection shapes: `404 NotFoundError` for "there is currently nothing to find" (unknown/inactive application, environment, or endpoint — uniform on purpose, a caller doesn't need to know *why* an address isn't available, only that it isn't) versus `403 ForbiddenError` for exactly one thing, a missing or `INACTIVE` Integration — the one authorization boundary Discovery itself enforces. **Discovery never checks a Service Scope.** That check belongs entirely to the target application, at the moment the source actually calls it — Discovery only answers "where", never "may you".
+
+**Source identity can never be spoofed.** `sourceApplicationKey` is always `req.service.applicationKey`, resolved from the already-verified API key — there is no `source` field anywhere in the request Discovery reads. **Discovery is not organization-scoped at all** — its query accepts only `target` and `environment`; an `organizationId` supplied anywhere is simply never read. Discovering "where is NA_PISTA's production API" answers nothing about which of NA_PISTA's organizations the caller may then act on — that remains entirely NA_PISTA's own authorization to enforce once the direct call actually arrives (CLAUDE.md's discovery prompt §21).
+
+**Nothing secret is ever in a Discovery response** — no API key, no webhook secret, no internal database id, no infrastructure metadata beyond the one endpoint's `type`/`baseUrl`. Configuration (an application's own base URL) and secrets (its credentials) are different categories, and Discovery only ever returns the former.
+
+**Who may manage platform applications?** Same answer as the Application registry itself already gives (see "Applications are a registry, not a module boundary" above): there is no `PLATFORM_ADMIN` actor yet, so an organization's `OWNER`/`ADMIN` permissions must never be allowed to mutate platform-wide infrastructure (CLAUDE.md's discovery prompt §26 is explicit about this). `modules/environments`, `modules/endpoints` and `modules/integrations` each expose real `create*`/`update*Status` functions — validated, duplicate-rejecting (a real database unique constraint, translated to `ConflictError`), and audited (`environment.created`/`.updated`, `endpoint.created`/`.updated`, `integration.created`/`.updated`) — but **no HTTP route calls them yet**. This mirrors the exact posture already established for `role_permissions` mutation and platform-level (`organizationId = null`) API keys: the logic exists, is fully tested, and is ready to be wired to a future Console-authenticated route without changing this layer; only the privileged HTTP surface is deferred until a real platform-admin context exists. Every `GET` route in this feature is auth-only, exactly like `/v1/roles`/`/v1/service-scopes`/`/v1/meters`.
+
+**Seed data is honest about what it is.** `production`/`staging` environment *labels* are seeded for every real product application (just names, not addresses — safe to invent). Exactly two illustrative `staging` endpoints are seeded, using `.example` domains (RFC 2606 — reserved for documentation, guaranteed to never resolve), so nothing could be mistaken for real infrastructure. **No `production` endpoint is seeded for any application** — CLAUDE.md's discovery prompt §27 is explicit that this platform does not invent production URLs on a product's behalf; a real product supplies its own once it has one. Three integrations are seeded, taken directly from CLAUDE.md's own illustrative examples: `QUALE_A_DICA→NA_PISTA`, `NA_PISTA→MICHA_EXPRESS`, `HOJE_TEM→QUALE_A_DICA`.
+
+**Webhooks are unaffected — this is the missing synchronous half.** The full picture is now:
+
+```
+Application A
+    │
+    ├── Service Auth (API Key)      — "who is A?"
+    ├── Service Scope                — "what may A ask for?"
+    │
+    ├── Service Discovery            — "where does B live?"
+    │          ↓  (direct call, never proxied)
+    │      Application B
+    │
+    └── Webhook subscription         — "tell me when B changes something"
+               ↑
+          Application B
+```
+
+Synchronous (`A → discover B → call B directly`) and asynchronous (`B → webhook event → A`) are still two entirely separate mechanisms, never merged — Service Discovery tells A where B lives; Service Scopes authorize what A may request; Webhooks notify A when B changes something relevant. None of the three becomes the other.
+
+**Deliberately not built:** an API Gateway/reverse proxy of any kind, DNS management, a load balancer or service mesh, Kubernetes-style discovery, automatic health monitoring or failover, caching of discovery results (query-time lookup only, indexed for it — see `application_environments_application_key_unique`, `application_endpoints_environment_type_unique`, `application_integrations_source_target_unique`), organization-scoped integrations (platform-level only, see above), and any mutation HTTP endpoint for environments/endpoints/integrations (deferred to a future platform-admin context).
 
 ### Role assignment vs. role definition
 

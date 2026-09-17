@@ -1,22 +1,13 @@
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { applicationMeters, applications, meters, organizations, usageEvents } from "../../db/schema/index.js";
+import { applicationMeters, meters, organizations, usageEvents } from "../../db/schema/index.js";
+import { getApplicationRecord } from "../applications/service.js";
 import { ForbiddenError, NotFoundError } from "../../shared/errors.js";
 
 interface MeterRow {
   id: string;
   key: string;
   unit: string;
-}
-
-async function getApplication(applicationKey: string): Promise<{ id: string; key: string; name: string }> {
-  const [application] = await db
-    .select({ id: applications.id, key: applications.key, name: applications.name })
-    .from(applications)
-    .where(eq(applications.key, applicationKey))
-    .limit(1);
-  if (!application) throw new NotFoundError(`Unknown application: ${applicationKey}`);
-  return application;
 }
 
 /**
@@ -116,7 +107,7 @@ function shapeUsageEvent(row: typeof usageEvents.$inferSelect, meter: MeterRow, 
 export async function recordUsage(
   input: RecordUsageInput,
 ): Promise<ReturnType<typeof shapeUsageEvent> & { idempotent: boolean }> {
-  const application = await getApplication(input.applicationKey);
+  const application = await getApplicationRecord(input.applicationKey);
   const meter = await validateMeterForApplication(application.id, application.key, input.meterKey);
   await assertOrganizationExists(input.organizationId);
 
@@ -175,7 +166,7 @@ export async function getUsageForMeter(input: {
   meterKey: string;
   range?: UsageRange;
 }) {
-  const application = await getApplication(input.applicationKey);
+  const application = await getApplicationRecord(input.applicationKey);
   const meter = await resolveApplicationMeter(application.id, input.meterKey);
 
   const conditions = [
@@ -205,7 +196,7 @@ export async function getUsageForApplication(input: {
   applicationKey: string;
   range?: UsageRange;
 }) {
-  const application = await getApplication(input.applicationKey);
+  const application = await getApplicationRecord(input.applicationKey);
 
   const conditions = [
     eq(usageEvents.organizationId, input.organizationId),
@@ -241,7 +232,7 @@ export async function listMeters() {
 }
 
 export async function listApplicationMeters(applicationKey: string) {
-  const application = await getApplication(applicationKey);
+  const application = await getApplicationRecord(applicationKey);
   const rows = await db
     .select({ key: meters.key, unit: meters.unit, description: meters.description })
     .from(applicationMeters)

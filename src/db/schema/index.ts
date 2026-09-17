@@ -3,6 +3,8 @@ export * from "./applications.js";
 export * from "./audit.js";
 export * from "./customers.js";
 export * from "./entitlements.js";
+export * from "./environments.js";
+export * from "./integrations.js";
 export * from "./memberships.js";
 export * from "./organizations.js";
 export * from "./permissions.js";

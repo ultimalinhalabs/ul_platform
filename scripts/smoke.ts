@@ -350,6 +350,67 @@ async function main() {
   });
   check("revoked credential can no longer record usage -> 401", r.status === 401);
 
+  // --- Service Discovery ---
+
+  r = await call("POST", `/organizations/${orgAId}/api-keys`, {
+    token: tokenA,
+    body: { applicationKey: "QUALE_A_DICA", scopes: [] },
+  });
+  check("create a QUALE_A_DICA credential with zero scopes -> 201", r.status === 201);
+  const qualeADicaKey: string = r.json?.data?.secret;
+
+  r = await call("GET", `/service/discover?target=NA_PISTA&environment=staging`, { token: qualeADicaKey });
+  check("service discovery (valid, fully-active chain) -> 200", r.status === 200);
+  check(
+    "discovery returns the seeded staging endpoint",
+    r.json?.data?.endpoint?.baseUrl === "https://staging.na-pista.example" && r.json?.data?.endpoint?.type === "API",
+  );
+  check("discovery response has no organizationId field", !("organizationId" in (r.json?.data ?? {})));
+  check(
+    "discovery response never mentions a secret",
+    !JSON.stringify(r.json?.data ?? {}).toLowerCase().includes("secret"),
+  );
+  check(
+    "discovery works with zero granted scopes — authorized by the integration registry, not Service Scopes",
+    r.status === 200,
+  );
+
+  r = await call("GET", `/service/discover?target=NA_PISTA&environment=staging`, { token: tokenA });
+  check("a human JWT cannot use service discovery -> 403", r.status === 403);
+
+  r = await call("GET", `/service/discover?target=NOT_A_REAL_APP&environment=staging`, { token: qualeADicaKey });
+  check("discovery of an unknown target application -> 404", r.status === 404);
+
+  r = await call("GET", `/service/discover?target=NA_PISTA&environment=not_a_real_env`, { token: qualeADicaKey });
+  check("discovery of an unknown environment -> 404", r.status === 404);
+
+  r = await call("GET", `/service/discover?target=NA_PISTA&environment=production`, { token: qualeADicaKey });
+  check("discovery of an unconfigured (no-endpoint) production environment -> 404", r.status === 404);
+
+  r = await call("GET", `/service/discover?target=MICHA_EXPRESS&environment=staging`, { token: qualeADicaKey });
+  check("discovery rejected for a target with no registered integration -> 403", r.status === 403);
+
+  r = await call("POST", `/organizations/${orgAId}/api-keys`, {
+    token: tokenA,
+    body: { applicationKey: "MICHA_EXPRESS", scopes: [] },
+  });
+  const michaExpressKey: string = r.json?.data?.secret;
+  r = await call("GET", `/service/discover?target=NA_PISTA&environment=staging&source=QUALE_A_DICA`, {
+    token: michaExpressKey,
+  });
+  check(
+    "a spoofed source query param is ignored — the real (unauthorized) credential identity is used -> 403",
+    r.status === 403,
+  );
+
+  r = await call("GET", `/service/discover?target=NA_PISTA&environment=staging&organizationId=${orgBId}`, {
+    token: qualeADicaKey,
+  });
+  check(
+    "an arbitrary organizationId query param has no effect — discovery is not organization-scoped -> 200",
+    r.status === 200 && !("organizationId" in (r.json?.data ?? {})),
+  );
+
   receiver.close();
   await db.delete(organizations).where(eq(organizations.id, orgAId));
   await db.delete(organizations).where(eq(organizations.id, orgBId));

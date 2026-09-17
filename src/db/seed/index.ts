@@ -1,7 +1,11 @@
 import { sql } from "drizzle-orm";
 import { pathToFileURL } from "node:url";
 import { db } from "../index.js";
+import { validateEndpointUrl } from "../../modules/endpoints/validation.js";
 import {
+  applicationEndpoints,
+  applicationEnvironments,
+  applicationIntegrations,
   applicationMeters,
   applicationServiceScopes,
   applications,
@@ -14,6 +18,9 @@ import {
   serviceScopes,
 } from "../schema/index.js";
 import {
+  APPLICATION_ENDPOINTS,
+  APPLICATION_ENVIRONMENTS,
+  APPLICATION_INTEGRATIONS,
   APPLICATION_METERS,
   APPLICATION_SERVICE_SCOPES,
   APPLICATIONS,
@@ -189,6 +196,69 @@ export async function seed() {
         });
     }
 
+    const environmentRows = await tx
+      .insert(applicationEnvironments)
+      .values(
+        Object.entries(APPLICATION_ENVIRONMENTS).flatMap(([applicationKey, envKeys]) => {
+          const applicationId = appIdByKey.get(applicationKey);
+          if (!applicationId) throw new Error(`Seed error: application "${applicationKey}" was not upserted`);
+          return envKeys.map((key) => ({ applicationId, key }));
+        }),
+      )
+      .onConflictDoUpdate({
+        target: [applicationEnvironments.applicationId, applicationEnvironments.key],
+        set: { updatedAt: sql`now()` },
+      })
+      .returning({ id: applicationEnvironments.id, applicationId: applicationEnvironments.applicationId, key: applicationEnvironments.key });
+
+    const environmentIdByAppIdAndKey = new Map(environmentRows.map((e) => [`${e.applicationId}:${e.key}`, e.id]));
+
+    // Validated the same way a real admin submission would be — seed data
+    // is not exempt from the rules `modules/endpoints/validation.ts` enforces.
+    for (const endpoint of APPLICATION_ENDPOINTS) validateEndpointUrl(endpoint.baseUrl, endpoint.environmentKey);
+
+    const endpointRows = APPLICATION_ENDPOINTS.map((e) => {
+      const applicationId = appIdByKey.get(e.applicationKey);
+      if (!applicationId) throw new Error(`Seed error: application "${e.applicationKey}" was not upserted`);
+      const environmentId = environmentIdByAppIdAndKey.get(`${applicationId}:${e.environmentKey}`);
+      if (!environmentId) {
+        throw new Error(`Seed error: environment "${e.applicationKey}/${e.environmentKey}" was not upserted`);
+      }
+      return { environmentId, type: e.type, baseUrl: e.baseUrl };
+    });
+
+    if (endpointRows.length > 0) {
+      await tx
+        .insert(applicationEndpoints)
+        .values(endpointRows)
+        .onConflictDoUpdate({
+          target: [applicationEndpoints.environmentId, applicationEndpoints.type],
+          set: { baseUrl: sql`excluded.base_url`, updatedAt: sql`now()` },
+        });
+    }
+
+    const integrationRows = APPLICATION_INTEGRATIONS.map((i) => {
+      const sourceApplicationId = appIdByKey.get(i.sourceApplicationKey);
+      if (!sourceApplicationId) {
+        throw new Error(`Seed error: application "${i.sourceApplicationKey}" was not upserted`);
+      }
+      const targetApplicationId = appIdByKey.get(i.targetApplicationKey);
+      if (!targetApplicationId) {
+        throw new Error(`Seed error: application "${i.targetApplicationKey}" was not upserted`);
+      }
+      return { sourceApplicationId, targetApplicationId, description: i.description };
+    });
+
+    if (integrationRows.length > 0) {
+      await tx
+        .insert(applicationIntegrations)
+        .values(integrationRows)
+        .onConflictDoUpdate({
+          target: [applicationIntegrations.sourceApplicationId, applicationIntegrations.targetApplicationId],
+          set: { description: sql`excluded.description`, updatedAt: sql`now()` },
+        });
+    }
+
     return {
       applications: appRows.length,
       permissions: permRows.length,
@@ -200,6 +270,9 @@ export async function seed() {
       applicationServiceScopes: applicationServiceScopeRows.length,
       meters: meterRows.length,
       applicationMeters: applicationMeterRows.length,
+      environments: environmentRows.length,
+      endpoints: endpointRows.length,
+      integrations: integrationRows.length,
     };
   });
 }

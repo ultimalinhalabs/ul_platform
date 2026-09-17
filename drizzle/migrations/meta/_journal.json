@@ -50,6 +50,13 @@
       "when": 1789608366634,
       "tag": "0006_violet_hydra",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789615637134,
+      "tag": "0007_previous_spencer_smythe",
+      "breakpoints": true
     }
   ]
 }

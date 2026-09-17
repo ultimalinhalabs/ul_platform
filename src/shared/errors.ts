@@ -38,3 +38,35 @@ export class ConflictError extends AppError {
     super(409, "CONFLICT", message);
   }
 }
+
+/**
+ * The Postgres error code, walking `.cause` chains — drizzle-orm wraps the
+ * driver's raw `PostgresError` (which carries `.code` directly) inside its
+ * own `DrizzleQueryError`, which does not itself expose `.code` but carries
+ * the original as `.cause`. Checking only the top-level error therefore
+ * silently never matches; this recurses until it finds one or runs out of
+ * causes.
+ */
+function extractPostgresErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  if ("code" in error && typeof (error as { code: unknown }).code === "string") {
+    return (error as { code: string }).code;
+  }
+  if ("cause" in error) {
+    return extractPostgresErrorCode((error as { cause: unknown }).cause);
+  }
+  return undefined;
+}
+
+/**
+ * Detects a Postgres unique_violation (23505) — the same code `errorHandler`
+ * already maps to 409 for HTTP-reached routes. Services with no HTTP write
+ * path yet (environments, endpoints, integrations — see
+ * modules/environments|endpoints|integrations) are called directly by
+ * tests/future callers, not through that handler, so they translate this
+ * themselves into a `ConflictError` at the point of insert rather than
+ * letting a raw driver error escape.
+ */
+export function isUniqueViolationError(error: unknown): boolean {
+  return extractPostgresErrorCode(error) === "23505";
+}

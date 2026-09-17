@@ -108,6 +108,64 @@ export const APPLICATION_METERS: Record<string, string[]> = {
   HOJE_TEM: ["users", "api_requests"],
 };
 
+/**
+ * Every real product application gets `production` + `staging` — just the
+ * two labels CLAUDE.md's discovery prompt asks for at minimum (§4). A
+ * local development environment is deliberately never registered here —
+ * see db/schema/environments.ts. UL_CONSOLE is absent, same reasoning as
+ * everywhere else it's excluded (an internal tool, not a product other
+ * applications integrate with).
+ */
+export const APPLICATION_ENVIRONMENTS: Record<string, string[]> = {
+  NA_PISTA: ["production", "staging"],
+  MICHA_EXPRESS: ["production", "staging"],
+  FOI: ["production", "staging"],
+  QUALE_A_DICA: ["production", "staging"],
+  HOJE_TEM: ["production", "staging"],
+};
+
+/**
+ * Illustrative `staging`-only examples, using `.example` domains (RFC 2606
+ * — reserved for documentation, guaranteed never to resolve) so nothing
+ * here could be mistaken for real infrastructure. Deliberately no
+ * `production` endpoint is seeded for any application — CLAUDE.md's
+ * discovery prompt §27 is explicit: this platform does not invent
+ * production URLs on a product's behalf. A real product supplies its own
+ * production endpoint once it actually has one (see README "Who may
+ * manage platform applications?").
+ */
+export const APPLICATION_ENDPOINTS: { applicationKey: string; environmentKey: string; type: "API"; baseUrl: string }[] = [
+  { applicationKey: "NA_PISTA", environmentKey: "staging", type: "API", baseUrl: "https://staging.na-pista.example" },
+  { applicationKey: "MICHA_EXPRESS", environmentKey: "staging", type: "API", baseUrl: "https://staging.micha-express.example" },
+];
+
+/**
+ * Directional application-to-application integrations — the exact
+ * examples CLAUDE.md's discovery prompt itself gives (§12). Platform-level
+ * only, no `organizationId` (see db/schema/integrations.ts). Registering
+ * these says only "these two applications may discover each other" — it
+ * grants no capability by itself; the actual API call still needs the
+ * target's own Service Scope check (see README "Integration ≠
+ * Authorization").
+ */
+export const APPLICATION_INTEGRATIONS: { sourceApplicationKey: string; targetApplicationKey: string; description: string }[] = [
+  {
+    sourceApplicationKey: "QUALE_A_DICA",
+    targetApplicationKey: "NA_PISTA",
+    description: "Qualé a Dica?! reads Na Pista's catalog to answer product questions.",
+  },
+  {
+    sourceApplicationKey: "NA_PISTA",
+    targetApplicationKey: "MICHA_EXPRESS",
+    description: "Na Pista creates payments through Micha Express.",
+  },
+  {
+    sourceApplicationKey: "HOJE_TEM",
+    targetApplicationKey: "QUALE_A_DICA",
+    description: "Hoje Tem! requests recommendations from Qualé a Dica?!.",
+  },
+];
+
 export const ROLES = [
   { key: "OWNER", name: "Owner", description: "Full administrative control of the organization." },
   { key: "ADMIN", name: "Admin", description: "Manages members and organization settings." },
