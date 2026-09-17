@@ -9,6 +9,17 @@ const envSchema = z.object({
   SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SUPABASE_JWT_SECRET: z.string().min(1),
+  /** Base64, must decode to exactly 32 bytes — AES-256-GCM key for webhook secret storage. See modules/webhooks/crypto.ts. */
+  WEBHOOK_SECRET_ENCRYPTION_KEY: z
+    .string()
+    .min(1)
+    .refine((v) => {
+      try {
+        return Buffer.from(v, "base64").length === 32;
+      } catch {
+        return false;
+      }
+    }, "WEBHOOK_SECRET_ENCRYPTION_KEY must be base64 decoding to exactly 32 bytes"),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -23,6 +23,8 @@ export interface ServiceAuthContext {
   applicationId: string;
   applicationKey: string;
   organizationId: string | null;
+  /** Persisted grants only — see modules/serviceScopes/service.ts. Never re-derived from anything client-supplied on this request. */
+  scopes: string[];
 }
 
 declare global {

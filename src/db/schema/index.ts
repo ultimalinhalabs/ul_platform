@@ -10,5 +10,7 @@ export * from "./planEntitlements.js";
 export * from "./plans.js";
 export * from "./profiles.js";
 export * from "./roles.js";
+export * from "./serviceScopes.js";
 export * from "./subscriptions.js";
 export * from "./users.js";
+export * from "./webhooks.js";

@@ -33,7 +33,9 @@ apiKeysRouter.post(
     const body = createApiKeySchema.parse(req.body);
     const apiKey = await createOrganizationApiKey({
       organizationId: req.membership!.organizationId,
-      ...body,
+      applicationKey: body.applicationKey,
+      expiresAt: body.expiresAt,
+      scopes: body.scopes,
       actorUserId: req.auth!.userId,
     });
     // secret is present in this one response only — never again

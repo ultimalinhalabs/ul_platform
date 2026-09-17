@@ -1,14 +1,25 @@
 import { sql } from "drizzle-orm";
 import { pathToFileURL } from "node:url";
 import { db } from "../index.js";
-import { applications, permissions, planEntitlements, plans, rolePermissions, roles } from "../schema/index.js";
 import {
+  applicationServiceScopes,
+  applications,
+  permissions,
+  planEntitlements,
+  plans,
+  rolePermissions,
+  roles,
+  serviceScopes,
+} from "../schema/index.js";
+import {
+  APPLICATION_SERVICE_SCOPES,
   APPLICATIONS,
   PERMISSIONS,
   PLAN_ENTITLEMENTS,
   PLANS,
   ROLES,
   ROLE_PERMISSIONS,
+  SERVICE_SCOPES,
 } from "./data.js";
 
 /**
@@ -108,6 +119,40 @@ export async function seed() {
         });
     }
 
+    const serviceScopeRows = await tx
+      .insert(serviceScopes)
+      .values(SERVICE_SCOPES.map((s) => ({ ...s })))
+      .onConflictDoUpdate({
+        target: serviceScopes.key,
+        set: { description: sql`excluded.description`, updatedAt: sql`now()` },
+      })
+      .returning({ id: serviceScopes.id, key: serviceScopes.key });
+
+    const scopeIdByKey = new Map(serviceScopeRows.map((s) => [s.key, s.id]));
+
+    const applicationServiceScopeRows = Object.entries(APPLICATION_SERVICE_SCOPES).flatMap(
+      ([applicationKey, scopeKeys]) => {
+        const applicationId = appIdByKey.get(applicationKey);
+        if (!applicationId) {
+          throw new Error(`Seed error: application "${applicationKey}" was not upserted`);
+        }
+        return scopeKeys.map((scopeKey) => {
+          const serviceScopeId = scopeIdByKey.get(scopeKey);
+          if (!serviceScopeId) throw new Error(`Seed error: service scope "${scopeKey}" was not upserted`);
+          return { applicationId, serviceScopeId };
+        });
+      },
+    );
+
+    if (applicationServiceScopeRows.length > 0) {
+      await tx
+        .insert(applicationServiceScopes)
+        .values(applicationServiceScopeRows)
+        .onConflictDoNothing({
+          target: [applicationServiceScopes.applicationId, applicationServiceScopes.serviceScopeId],
+        });
+    }
+
     return {
       applications: appRows.length,
       permissions: permRows.length,
@@ -115,6 +160,8 @@ export async function seed() {
       rolePermissions: rolePermissionRows.length,
       plans: planRows.length,
       planEntitlements: planEntitlementRows.length,
+      serviceScopes: serviceScopeRows.length,
+      applicationServiceScopes: applicationServiceScopeRows.length,
     };
   });
 }

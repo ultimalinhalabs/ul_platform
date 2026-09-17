@@ -29,8 +29,9 @@ npm run dev
 - `npm run build` / `npm start` — production build and run
 - `npm run typecheck` / `npm run lint` / `npm test`
 - `npm run db:generate` / `db:migrate` / `db:push` / `db:studio` — Drizzle Kit
-- `npm run db:seed` — idempotent seed of the platform catalogs (applications, roles, permissions, plans, plan entitlements)
+- `npm run db:seed` — idempotent seed of the platform catalogs (applications, roles, permissions, plans, plan entitlements, service scopes, application service-scope allowlists)
 - `npm run db:inspect` — dumps the live schema (tables/columns/constraints/FKs/indexes) for manual verification
+- `npm run smoke` — live HTTP smoke test: starts the real app in-process and drives Service Scopes + Webhooks end to end (real bearer tokens, real API keys, a real local receiver verifying outbound signatures). Requires a migrated, seeded database; not part of `npm test`.
 
 ## Structure
 
@@ -43,10 +44,11 @@ src/
   modules/       domain services (users, memberships, authorization, audit, ...)
   routes/v1/     versioned HTTP routes
   shared/        cross-cutting types/helpers (errors, response envelope)
-scripts/         one-off/dev-only scripts (schema inspection)
+scripts/         one-off/dev-only scripts (schema inspection, live HTTP smoke test)
 tests/           node:test suite (database/seed, authorization, identity, customer, organizations, memberships,
                  roles/permissions catalog, role-assignment security, applications catalog, plans/plan entitlements,
-                 subscriptions, organization application access, effective entitlement resolution, API keys)
+                 subscriptions, organization application access, effective entitlement resolution, API keys,
+                 service scopes, webhooks)
 ```
 
 ## API — v1
@@ -76,6 +78,15 @@ tests/           node:test suite (database/seed, authorization, identity, custom
 - `GET /v1/organizations/:organizationId/api-keys` / `GET .../api-keys/:keyId` — metadata only, never the secret; requires `api_key.read` (`OWNER`/`ADMIN`).
 - `POST /v1/organizations/:organizationId/api-keys/:keyId/revoke` — status change to `REVOKED`, never a delete; requires `api_key.manage`.
 - `GET /v1/organizations/:organizationId/applications/:applicationKey/entitlements[/:key]` (above) additionally accepts a service credential (API key) whose own stored application+organization match the URL — see "API Keys" below. Every other endpoint in this API remains human-only.
+- `GET /v1/service-scopes` — the full platform scope registry (`key`, `description`). Auth-only, same posture as `/v1/roles`/`/v1/permissions`.
+- `GET /v1/applications/:applicationKey/service-scopes` — the subset of the registry that application's credentials may request. Lets an org admin see valid choices before calling `POST /organizations/:id/api-keys` with `scopes`.
+- `GET /v1/service/me` — the service-credential analogue of `GET /v1/me`: returns the calling API key's own `apiKeyId`, `application`, `organizationId` and granted `scopes`. 403 for a human caller.
+- `POST /v1/organizations/:organizationId/api-keys` (see "API Keys" below) now additionally accepts `scopes: string[]`; every requested scope is validated against the registry and the application's allowlist before the key is created.
+- `POST /v1/organizations/:organizationId/webhooks` — creates a webhook endpoint for `{ applicationKey, url, eventTypes }`; requires `webhook.manage` (OWNER-only). Response includes the raw signing secret **exactly this once**.
+- `GET /v1/organizations/:organizationId/webhooks` / `GET .../webhooks/:webhookId` — metadata only, never the secret; requires `webhook.read` (`OWNER`/`ADMIN`).
+- `POST /v1/organizations/:organizationId/webhooks/:webhookId/revoke` — status change to `REVOKED`, never a delete; requires `webhook.manage`.
+- `POST /v1/organizations/:organizationId/webhooks/:webhookId/test` — fires a synthetic `webhook.test` event at exactly this endpoint (bypassing its subscriptions), reusing the real delivery path; requires `webhook.manage`.
+- `POST /v1/organizations/:organizationId/events` — **service-only**: publishes a platform event `{ type, data }` on behalf of the calling credential's own application/organization, delivering it to every `ACTIVE` webhook endpoint in that organization subscribed to that `type`. Requires the `event.publish` service scope. See "Service Scopes" and "Webhooks" below.
 
 ### Applications are a registry, not a module boundary
 
@@ -179,6 +190,75 @@ A machine credential never impersonates a human: there is no fake `users` row, n
 **Audit:** `api_key.created` and `api_key.revoked` are recorded (keyId, applicationId, organizationId, actor); no raw secret, hash, or bearer credential ever appears in an audit row, and successful authentications are not audited (matching "don't audit every GET").
 
 **Deliberately future work, not built here:** automated rotation, rate limiting (API-key authentication is a natural future rate-limit target), OAuth client-credentials flow, and any concept of a "service account" richer than an (application, organization) pair — should the ecosystem ever need something between "one plain credential" and "a full IdP client."
+
+### Service Scopes: what a service credential is authorized to do
+
+API Keys answer *"who is this service?"*. Service Scopes answer *"what is this service authorized to do?"* — a separate, later question, never conflated with identity itself:
+
+```
+Service Credential (API Key)
+    ↓
+Application identity (from the credential, never the request)
+    ↓
+Organization context (from the credential, when org-scoped)
+    ↓
+Service Scopes (granted at creation, persisted, never re-derived from the request)
+    ↓
+Protected service operation (requireServiceScope("event.publish"), ...)
+```
+
+**Registry, not free-form strings.** `service_scopes` is a small, platform-seeded global vocabulary (`event.publish`, `catalog.read`, `catalog.write`, `customer.read`, `payment.create`, `payment.read`, `report.generate` — see `db/seed/data.ts`) — the service-identity equivalent of `permissions`. There is no endpoint to add to this registry: exactly the same reasoning as "no `role.manage` endpoint" (no `PLATFORM_ADMIN` actor yet to safely gate registry mutation — see "Role assignment vs. role definition" below). A caller can never grant itself `scope = "admin.everything"` merely by typing it — `validateRequestedScopes` (`modules/serviceScopes/service.ts`) checks every requested scope against this table first.
+
+**Application allowlist, not just registry membership.** `application_service_scopes` is a join table — the *set* of registry scopes a given Application's credentials may ever request (e.g. `NA_PISTA` → `catalog.read`/`catalog.write`/`customer.read`/`event.publish`; `MICHA_EXPRESS` → `payment.create`/`payment.read`/`event.publish`). A scope that's real but not in *this* application's allowlist is rejected with `403 FORBIDDEN` — deliberately a different status than an unknown scope (`400 VALIDATION_ERROR`): one is a malformed request, the other is an authorization boundary. This is what makes cross-application scope escalation structurally impossible, not merely convention: a `QUALE_A_DICA` credential can never hold a `payment.create` scope, because that (application, scope) pair simply has no row to grant it from.
+
+**Granted scopes are persisted per key, not re-evaluated per request.** `api_key_scopes` records exactly what was validated and granted at creation time. `verifyApiKeyToken` loads this set once per request into `req.service.scopes` — nothing about scope-checking ever re-reads the request body, so nothing a caller sends can widen its own credential. There is no scope-editing endpoint in v1: changing a key's scopes means creating a new key and revoking the old one, the same rotation pattern already documented for secrets.
+
+**`requireServiceScope(scopeKey)`** (`middleware/requireServiceScope.ts`) is the reusable gate, the machine-identity equivalent of `requirePermission`. It 403s outright if `req.service` is unset (a human JWT can never satisfy a service scope — human and service authorization are different concerns per CLAUDE.md §6, never merged with a fallback check). The one scope wired to a real endpoint in v1 is `event.publish` on `POST /organizations/:id/events` (see "Webhooks" below); the middleware itself is generic and ready for a second, differently-scoped machine endpoint whenever one is needed.
+
+**`requireServiceOrganizationMatch()`** (`middleware/requireServiceOrganizationMatch.ts`) is the companion organization-boundary check for service-only routes: it 401s a human request outright (an event's source must always be a real service identity, never a human session forging one) and 403s a credential whose *stored* `organizationId` doesn't match the route's `:organizationId` — the same "credential's own row is the authorization, not the URL" principle already used by `middleware/entitlementAccess.ts`, just generalized and made service-only.
+
+**Entitlements are a different, orthogonal question.** A service can hold `scope: catalog.read` while its organization's plan does or doesn't include `entitlement: feature.catalog = true` — neither implies the other, and no protected operation in v1 is forced to check both (CLAUDE.md is explicit: "do not force every service-authenticated request to check subscription/entitlement"). The architecture supports composing `service scope + application access + effective entitlement` for a future protected operation that genuinely needs all three; nothing here builds that composition speculatively.
+
+**Deliberately not built:** scope registry mutation via API (seed-only, see above), per-organization custom scopes, a scope hierarchy/wildcarding scheme (`catalog.*`), and any notion of scopes for human permissions (`permissions` and `service_scopes` remain two entirely separate tables answering two entirely separate questions).
+
+### Webhooks: event notification, not a synchronous API
+
+APIs answer *"do X / give me Y"*. Webhooks answer *"X happened"* — a fundamentally different shape of communication, kept in its own bounded context (`modules/webhooks/`), separate from Service Auth (`modules/apiKeys/`, `modules/serviceScopes/`):
+
+```
+MICHA_EXPRESS  →  POST /organizations/:id/events { type: "payment.completed", data }  →  UL Platform
+                                                                                              │
+                                                                              looks up ACTIVE endpoints
+                                                                              in that org subscribed to
+                                                                              "payment.completed"
+                                                                                              │
+                                                                                              ▼
+                                                                          NA_PISTA's registered webhook URL
+```
+
+The platform transports and governs this event; it never interprets `type`/`data` — that meaning belongs entirely to the originating product (CLAUDE.md §18-19). No product-specific event types are seeded or validated beyond the generic `domain.action` shape.
+
+**Webhook endpoints** (`webhook_endpoints`) are application- and organization-scoped exactly like `api_keys` — same ownership shape, same reasoning for why only the organization-scoped form is creatable over HTTP in v1 (no `PLATFORM_ADMIN` to safely authorize a platform-level/null-organization endpoint). `applicationId` names the *receiving* product context (e.g. "Organization ABC's NA_PISTA endpoint") — it does not restrict which *source* application's events can reach it; that's controlled entirely by explicit event-type subscriptions (`webhook_event_subscriptions`), never "deliver everything". A given `(endpoint, eventType)` pair is subscribed at most once (unique index).
+
+**Webhook secret storage is deliberately NOT the API-key strategy.** `api_keys.secretHash` is a one-way SHA-256 hash because a key only ever needs to be *verified*. A webhook secret must also be *retrieved*, because the platform itself computes the outbound HMAC signature — a hash can't be reversed for that. So `webhook_endpoints.secretEncrypted` uses **AES-256-GCM** (authenticated encryption) under a platform-held key (`WEBHOOK_SECRET_ENCRYPTION_KEY`, env-only, 32 bytes base64 — see `modules/webhooks/crypto.ts`), not a hash. The raw secret (`whsec_<random>`, 256 bits from a CSPRNG) is still returned exactly once, at creation, and never re-exposed by any read endpoint. A tampered/corrupted ciphertext fails to decrypt (GCM's auth tag) rather than silently producing garbage that would sign outbound requests incorrectly.
+
+**Event envelope** (`modules/webhooks/delivery.ts`'s `EventEnvelope`): `{ id, type, source: { application }, organizationId, occurredAt, data }`. `source.application` is always populated from the *already-authenticated* publishing credential's own `applicationKey` — never a request-body field, so a receiving product can trust it without any further check; nothing a client sends can rewrite who an event came from.
+
+**Signature: `HMAC-SHA256(secret, "<unix-timestamp>.<rawBody>")`, hex-encoded** (`modules/webhooks/signature.ts`), sent as `X-UL-Signature` alongside `X-UL-Timestamp`, `X-UL-Event-Id`, `X-UL-Event-Type`. Signs the exact transmitted JSON bytes, deliberately not a re-serialization of a parsed object (which could reorder keys/whitespace and make an independently-computed signature disagree for reasons unrelated to tampering). `verifyWebhookSignature` also checks timestamp freshness (default tolerance: 300 seconds) — this is the platform's reference verification implementation for receivers to mirror, not a policy enforced on senders. **This alone is not replay protection**: it only proves "signed by this secret, recently". Consumers are responsible for tracking event IDs they've already processed.
+
+**Idempotency: delivery is at-least-once, never exactly-once.** Every publish gets a globally unique `evt_<uuid>` event ID; a consumer must tolerate the same ID arriving more than once (there is no retry loop in v1 that would cause this today, but the model doesn't promise it never will). No dedup is attempted platform-side.
+
+**Delivery (`modules/webhooks/delivery.ts`):** `deliverWebhook(endpoint, event)` is one HTTP POST and one `webhook_deliveries` row — success or failure, never a thrown exception (matching `recordAuditEvent`'s "never break the calling operation" posture). `publishEvent(...)` resolves the matching `ACTIVE` + subscribed endpoints for one organization/event-type and delivers to each independently — one endpoint's failure/unreachability never blocks another's delivery. Delivery is synchronous within the publishing request in v1 (no queue): CLAUDE.md explicitly rules out introducing Redis/Kafka/workers for this step. `webhook_deliveries.attempt` (default `1`) exists so a *future* retry mechanism can increment it without a schema change — v1 makes exactly one attempt and does not implement backoff, max-attempt limits, or dead-lettering.
+
+**`POST /organizations/:id/events`** is the one and only trigger for delivery — service-only (`requireServiceOrganizationMatch` + `requireServiceScope("event.publish")`), never human. This keeps "who may claim an event happened" cryptographically tied to a real service identity, never a request body claim.
+
+**`POST /organizations/:id/webhooks/:webhookId/test`** fires a synthetic `webhook.test` event at exactly one endpoint, deliberately bypassing its event-type subscriptions (an explicit test request is itself the authorization to deliver) — and reuses `deliverWebhook` directly, so a passing test is a real signal live delivery will work, not a separate mocked path.
+
+**Tenant isolation**, same pattern as everywhere else in this API: every webhook query has `organizationId` in its `WHERE` clause by construction (never checked after the fact), a revoked endpoint stops receiving deliveries immediately (checked live at publish time, nothing mutated on already-recorded deliveries), and a service credential can only ever publish into its own stored `organizationId` (`requireServiceOrganizationMatch`).
+
+**Audit:** `webhook.created` and `webhook.revoked` only — individual delivery attempts are operational data (`webhook_deliveries`), not audit-log events, matching "don't audit every GET"/"don't audit every delivery attempt" (CLAUDE.md §34). No secret, encrypted or otherwise, ever appears in an audit row.
+
+**Deliberately future work, not built here:** automatic retries/backoff/dead-lettering, a queue or worker of any kind, per-event-type payload schemas or a global event-type catalog, webhook secret rotation UX beyond "create new endpoint, revoke old one", and delivery batching.
 
 ### Role assignment vs. role definition
 

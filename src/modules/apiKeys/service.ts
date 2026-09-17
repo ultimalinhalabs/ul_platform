@@ -1,8 +1,9 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { apiKeys, applications } from "../../db/schema/index.js";
+import { apiKeyScopes, apiKeys, applications, serviceScopes } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
 import { ConflictError, NotFoundError, UnauthorizedError } from "../../shared/errors.js";
+import { getGrantedScopeKeys, validateRequestedScopes } from "../serviceScopes/service.js";
 import {
   buildApiKeyToken,
   generateApiKeySecret,
@@ -22,7 +23,7 @@ interface MetadataRow {
 }
 
 /** Never includes secretHash or any cryptographic material — see README "API Keys". */
-function shapeMetadata(row: MetadataRow) {
+function shapeMetadata(row: MetadataRow, scopes: string[]) {
   return {
     id: row.id,
     application: row.applicationKey,
@@ -31,7 +32,27 @@ function shapeMetadata(row: MetadataRow) {
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     revokedAt: row.revokedAt,
+    scopes,
   };
+}
+
+/** Batched — one query for every key's granted scopes instead of N+1 per listed key. */
+async function getGrantedScopeKeysByApiKeyId(apiKeyIds: string[]): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  if (apiKeyIds.length === 0) return map;
+
+  const rows = await db
+    .select({ apiKeyId: apiKeyScopes.apiKeyId, key: serviceScopes.key })
+    .from(apiKeyScopes)
+    .innerJoin(serviceScopes, eq(serviceScopes.id, apiKeyScopes.serviceScopeId))
+    .where(inArray(apiKeyScopes.apiKeyId, apiKeyIds));
+
+  for (const row of rows) {
+    const existing = map.get(row.apiKeyId);
+    if (existing) existing.push(row.key);
+    else map.set(row.apiKeyId, [row.key]);
+  }
+  return map;
 }
 
 /**
@@ -47,6 +68,7 @@ export async function createOrganizationApiKey(input: {
   applicationKey: string;
   actorUserId: string;
   expiresAt?: Date;
+  scopes?: string[];
 }) {
   const [application] = await db
     .select({ id: applications.id, key: applications.key })
@@ -55,20 +77,40 @@ export async function createOrganizationApiKey(input: {
     .limit(1);
   if (!application) throw new NotFoundError(`Unknown application: ${input.applicationKey}`);
 
+  // Every requested scope is checked against the registry AND this
+  // application's allowlist before anything is persisted — a client can
+  // never mint a credential with a scope it merely typed (see
+  // modules/serviceScopes/service.ts).
+  const resolvedScopes = await validateRequestedScopes(
+    application.id,
+    application.key,
+    input.scopes ?? [],
+  );
+
   const secret = generateApiKeySecret();
   const secretHash = hashApiKeySecret(secret);
 
-  const [row] = await db
-    .insert(apiKeys)
-    .values({
-      secretHash,
-      applicationId: application.id,
-      organizationId: input.organizationId,
-      createdByUserId: input.actorUserId,
-      expiresAt: input.expiresAt,
-    })
-    .returning();
-  if (!row) throw new Error("Failed to create API key");
+  const row = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(apiKeys)
+      .values({
+        secretHash,
+        applicationId: application.id,
+        organizationId: input.organizationId,
+        createdByUserId: input.actorUserId,
+        expiresAt: input.expiresAt,
+      })
+      .returning();
+    if (!created) throw new Error("Failed to create API key");
+
+    if (resolvedScopes.length > 0) {
+      await tx
+        .insert(apiKeyScopes)
+        .values(resolvedScopes.map((s) => ({ apiKeyId: created.id, serviceScopeId: s.id })));
+    }
+
+    return created;
+  });
 
   await recordAuditEvent({
     actorUserId: input.actorUserId,
@@ -77,11 +119,11 @@ export async function createOrganizationApiKey(input: {
     action: "api_key.created",
     targetType: "api_key",
     targetId: row.id,
-    metadata: { applicationKey: input.applicationKey },
+    metadata: { applicationKey: input.applicationKey, scopes: resolvedScopes.map((s) => s.key) },
   });
 
   return {
-    ...shapeMetadata({ ...row, applicationKey: application.key }),
+    ...shapeMetadata({ ...row, applicationKey: application.key }, resolvedScopes.map((s) => s.key)),
     // shown exactly once — never persisted, never logged, never re-derivable
     secret: buildApiKeyToken(row.id, secret),
   };
@@ -103,7 +145,8 @@ export async function listApiKeysForOrganization(organizationId: string) {
     .where(eq(apiKeys.organizationId, organizationId))
     .orderBy(apiKeys.createdAt);
 
-  return rows.map(shapeMetadata);
+  const scopesByKeyId = await getGrantedScopeKeysByApiKeyId(rows.map((r) => r.id));
+  return rows.map((row) => shapeMetadata(row, scopesByKeyId.get(row.id) ?? []));
 }
 
 /** Tenant-safe by construction: organizationId is always part of the WHERE, never checked after the fact. */
@@ -124,7 +167,7 @@ export async function getApiKeyDetail(organizationId: string, keyId: string) {
     .limit(1);
 
   if (!row) throw new NotFoundError("API key not found");
-  return shapeMetadata(row);
+  return shapeMetadata(row, await getGrantedScopeKeys(row.id));
 }
 
 export async function revokeApiKey(input: { organizationId: string; keyId: string; actorUserId: string }) {
@@ -157,7 +200,7 @@ export async function revokeApiKey(input: { organizationId: string; keyId: strin
     .from(applications)
     .where(eq(applications.id, current.applicationId));
 
-  return shapeMetadata({ ...updated, applicationKey: application!.key });
+  return shapeMetadata({ ...updated, applicationKey: application!.key }, await getGrantedScopeKeys(updated.id));
 }
 
 export interface VerifiedServiceCredential {
@@ -165,6 +208,7 @@ export interface VerifiedServiceCredential {
   applicationId: string;
   applicationKey: string;
   organizationId: string | null;
+  scopes: string[];
 }
 
 /**
@@ -205,5 +249,6 @@ export async function verifyApiKeyToken(token: string): Promise<VerifiedServiceC
     applicationId: row.applicationId,
     applicationKey: row.applicationKey,
     organizationId: row.organizationId,
+    scopes: await getGrantedScopeKeys(row.id),
   };
 }

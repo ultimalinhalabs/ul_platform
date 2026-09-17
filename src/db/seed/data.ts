@@ -34,7 +34,46 @@ export const PERMISSIONS = [
   { key: "audit.read", description: "View an organization's audit log." },
   { key: "api_key.manage", description: "Create/revoke an organization's API keys." },
   { key: "api_key.read", description: "View an organization's API key metadata (never secrets)." },
+  { key: "webhook.manage", description: "Create/revoke an organization's webhook endpoints." },
+  { key: "webhook.read", description: "View an organization's webhook endpoints (never secrets)." },
 ] as const;
+
+/**
+ * Global registry of machine-actionable capabilities a service credential
+ * may be granted — the service-identity equivalent of `PERMISSIONS` above.
+ * These are examples of the generic vocabulary CLAUDE.md asks for, not a
+ * product-specific catalog: `event.publish` is the one platform-owned
+ * capability (any application may publish an event about itself), the
+ * rest are illustrative product-shaped actions used to prove the
+ * application-scoping model actually restricts something.
+ */
+export const SERVICE_SCOPES = [
+  { key: "event.publish", description: "Publish a platform event on behalf of the credential's application." },
+  { key: "catalog.read", description: "Read catalog data." },
+  { key: "catalog.write", description: "Create/update catalog data." },
+  { key: "customer.read", description: "Read customer data." },
+  { key: "payment.create", description: "Create a payment." },
+  { key: "payment.read", description: "Read payment data." },
+  { key: "report.generate", description: "Generate a report." },
+] as const;
+
+/**
+ * Which SERVICE_SCOPES each Application's credentials may request — the
+ * allowlist that stops a QUALE_A_DICA credential from ever being granted a
+ * MICHA_EXPRESS-only scope (see modules/serviceScopes/service.ts).
+ * `event.publish` is granted to every application with real service
+ * integrations: publishing "something happened about my own org" is a
+ * baseline platform capability, not a premium/product-specific one.
+ * UL_CONSOLE is deliberately absent — it's an internal tool organizations
+ * never subscribe to or issue integration credentials for.
+ */
+export const APPLICATION_SERVICE_SCOPES: Record<string, string[]> = {
+  NA_PISTA: ["event.publish", "catalog.read", "catalog.write", "customer.read"],
+  MICHA_EXPRESS: ["event.publish", "payment.create", "payment.read"],
+  FOI: ["event.publish", "catalog.read"],
+  QUALE_A_DICA: ["event.publish", "catalog.read", "report.generate"],
+  HOJE_TEM: ["event.publish", "report.generate"],
+};
 
 export const ROLES = [
   { key: "OWNER", name: "Owner", description: "Full administrative control of the organization." },
@@ -100,6 +139,8 @@ export const ROLE_PERMISSIONS: Record<(typeof ROLES)[number]["key"], string[]> =
     "audit.read",
     "api_key.manage",
     "api_key.read",
+    "webhook.manage",
+    "webhook.read",
   ],
   ADMIN: [
     "organization.read",
@@ -115,6 +156,7 @@ export const ROLE_PERMISSIONS: Record<(typeof ROLES)[number]["key"], string[]> =
     "entitlement.read",
     "audit.read",
     "api_key.read",
+    "webhook.read",
   ],
   MANAGER: [
     "organization.read",
