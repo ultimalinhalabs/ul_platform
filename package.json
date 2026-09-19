@@ -23,6 +23,7 @@
     "platform:bootstrap-admin": "tsx scripts/bootstrap-platform-admin.ts"
   },
   "dependencies": {
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^5.1.0",
@@ -33,6 +34,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",
+    "@types/cors": "^2.8.19",
     "@types/express": "^5.0.1",
     "@types/node": "^20.17.19",
     "drizzle-kit": "^0.31.10",
