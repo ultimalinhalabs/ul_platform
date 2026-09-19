@@ -31,7 +31,8 @@ npm run dev
 - `npm run db:generate` / `db:migrate` / `db:push` / `db:studio` — Drizzle Kit
 - `npm run db:seed` — idempotent seed of the platform catalogs (applications, roles, permissions, plans, plan entitlements, service scopes, application service-scope allowlists)
 - `npm run db:inspect` — dumps the live schema (tables/columns/constraints/FKs/indexes) for manual verification
-- `npm run smoke` — live HTTP smoke test: starts the real app in-process and drives Service Scopes + Webhooks end to end (real bearer tokens, real API keys, a real local receiver verifying outbound signatures). Requires a migrated, seeded database; not part of `npm test`.
+- `npm run smoke` — live HTTP smoke test: starts the real app in-process and drives Service Scopes + Webhooks + Service Discovery + Platform Administration end to end (real bearer tokens, real API keys, a real local receiver verifying outbound signatures). Requires a migrated, seeded database; not part of `npm test`.
+- `npm run platform:bootstrap-admin` — one-time creation of the platform's first `PLATFORM_ADMIN` (reads `PLATFORM_ADMIN_BOOTSTRAP_USER_ID`). See "Platform Control Plane" below.
 
 ## Structure
 
@@ -40,15 +41,16 @@ src/
   config/        env loading & validation
   db/            drizzle client + schema/ (one file per domain) + seed/
   integrations/  external providers (supabase)
-  middleware/    authenticate, organization context, permission checks, errors
-  modules/       domain services (users, memberships, authorization, audit, ...)
+  middleware/    authenticate, organization context, platform context, permission checks, errors
+  modules/       domain services (users, memberships, authorization, audit, platformAdmins, platformAuthorization, ...)
   routes/v1/     versioned HTTP routes
   shared/        cross-cutting types/helpers (errors, response envelope)
-scripts/         one-off/dev-only scripts (schema inspection, live HTTP smoke test)
+scripts/         one-off/dev-only scripts (schema inspection, live HTTP smoke test, platform-admin bootstrap)
 tests/           node:test suite (database/seed, authorization, identity, customer, organizations, memberships,
                  roles/permissions catalog, role-assignment security, applications catalog, plans/plan entitlements,
                  subscriptions, organization application access, effective entitlement resolution, API keys,
-                 service scopes, webhooks, usage/metering, application environments/endpoints, service discovery/integrations)
+                 service scopes, webhooks, usage/metering, application environments/endpoints, service discovery/integrations,
+                 platform administration)
 ```
 
 ## API — v1
@@ -65,7 +67,8 @@ tests/           node:test suite (database/seed, authorization, identity, custom
 - Assigning the `OWNER` role to a membership, or changing/removing a membership that is currently an active `OWNER`, additionally requires the *actor's own* role to already be `OWNER` — `role.assign` alone (held by `ADMIN` too) is not enough. Prevents an `ADMIN` from minting a new `OWNER` (self or ally) or neutralizing an existing one. Enforced in the service layer (`assertOwnerRoleChangeAllowed`), not just at the route.
 - `GET /v1/roles` / `GET /v1/roles/:roleKey` — the platform's global role catalog (`OWNER`/`ADMIN`/`MANAGER`/`STAFF`); detail includes the role's granted permission keys. Auth only, no organization context — roles are global, not per-tenant data.
 - `GET /v1/permissions` / `GET /v1/permissions/:permissionKey` — the platform's global permission catalog. Same auth model as roles.
-- `GET /v1/applications` / `GET /v1/applications/:applicationKey` — the platform's application registry (`UL_CONSOLE`, `NA_PISTA`, `MICHA_EXPRESS`, `FOI`, `QUALE_A_DICA`, `HOJE_TEM`). Read-only, auth-only — same reasoning as roles/permissions. Registering, activating or suspending an application is an administrative operation deferred to the future Console; there is no `POST`/`PATCH`/`DELETE` here.
+- `GET /v1/applications` / `GET /v1/applications/:applicationKey` — the platform's application registry (`UL_CONSOLE`, `NA_PISTA`, `MICHA_EXPRESS`, `FOI`, `QUALE_A_DICA`, `HOJE_TEM`). Read-only, auth-only — same reasoning as roles/permissions.
+- `POST /v1/applications` / `PATCH /v1/applications/:applicationKey` — registers a new application / updates `name`/`description`/`status`. **Platform-only**: requires `platform.application.manage` (see "Platform Control Plane" below) — no Organization role, however senior, can reach these. No `DELETE`: `status` (`ACTIVE`/`SUSPENDED`/`DEPRECATED`) is the lifecycle lever, and `plans.applicationId` is `ON DELETE RESTRICT` anyway once an application has commercial history.
 - `GET /v1/applications/:applicationKey/plans` — the application's commercial plans still open to new subscriptions (`status = ACTIVE` only). 404 if the application itself doesn't exist.
 - `GET /v1/applications/:applicationKey/plans/:planKey` — one plan's full detail, including its entitlements — regardless of status (an `ARCHIVED` plan must still be inspectable, e.g. later by an existing subscription; it's just hidden from the list above). A plan can only be reached through its own application's key in the URL — the same plan `key` used by a different application (e.g. two apps both having a `"BUSINESS"` plan) never cross-resolves.
 - `POST /v1/organizations/:organizationId/subscriptions` — subscribes the organization to `{ applicationKey, planKey }`; requires `subscription.manage` (OWNER-only in the seed, same posture as `organization.delete`). Rejects an unknown application/plan (`404`), a `SUSPENDED`/`DEPRECATED` application or `ARCHIVED` plan (`409` — new subscriptions only; existing ones are never touched), and a second non-canceled subscription for the same application (`409` — see below).
@@ -91,10 +94,17 @@ tests/           node:test suite (database/seed, authorization, identity, custom
 - `GET /v1/applications/:applicationKey/meters` — the subset of the registry that application may record/query usage against.
 - `POST /v1/organizations/:organizationId/applications/:applicationKey/usage` — **service-only**: records one usage event `{ meterKey, quantity, occurredAt?, idempotencyKey, metadata? }` for the calling credential's own application/organization. Requires the `usage.write` service scope. Returns `201` for a newly-recorded event, `200` for an idempotent replay of an existing `idempotencyKey` (same body, same row — never a second count). See "Usage / Metering" below.
 - `GET /v1/organizations/:organizationId/applications/:applicationKey/usage` / `GET .../usage/:meterKey` — aggregated usage, optionally bounded by `?from=&to=` (ISO timestamps, either/both omittable). Accepts a human member with `usage.read` **or** a service credential whose own stored application/organization match the URL and which holds the `usage.read` scope. `200` with `quantity: 0` (or `meters: []`) for a range/application with no recorded usage — a real, meaningful empty answer, not an error.
-- `GET /v1/applications/:applicationKey/environments` / `GET .../environments/:environmentKey` — an application's registered deployment contexts (`production`/`staging`), with `status`. Auth-only, same posture as `/v1/service-scopes`/`/v1/meters`. No `POST`/`PATCH` here — see "Who may manage platform applications?" below.
+- `GET /v1/applications/:applicationKey/environments` / `GET .../environments/:environmentKey` — an application's registered deployment contexts (`production`/`staging`), with `status`. Auth-only, same posture as `/v1/service-scopes`/`/v1/meters`.
+- `POST /v1/applications/:applicationKey/environments` / `PATCH .../environments/:environmentKey` — registers an environment / changes its `status`. **Platform-only**: requires `platform.environment.manage`.
 - `GET /v1/applications/:applicationKey/environments/:environmentKey/endpoints` — the network addresses (`type`, `baseUrl`, `status`) that environment exposes. Same auth posture; never returns a secret (there is none to return — endpoints have no credential of their own).
+- `POST /v1/applications/:applicationKey/environments/:environmentKey/endpoints` / `PATCH .../endpoints/:endpointType` — registers an endpoint (`{ type: "API", baseUrl }`, validated exactly as before — HTTPS mandatory in `production`, no embedded credentials, no fragment) / changes its `status`. **Platform-only**: requires `platform.endpoint.manage`.
 - `GET /v1/applications/:sourceApplicationKey/integrations` / `GET .../integrations/:targetApplicationKey` — the directional application-to-application integrations registered *from* this application. Same auth posture.
+- `POST /v1/applications/:sourceApplicationKey/integrations/:targetApplicationKey` / `PATCH .../integrations/:targetApplicationKey` — registers a directional integration / changes its `status`/`description`. **Platform-only**: requires `platform.integration.manage`.
 - `GET /v1/service/discover?target=<applicationKey>&environment=<environmentKey>` — **service-only**: Service Discovery. Resolves to `{ application: { key }, environment, endpoint: { type, baseUrl } }` for the calling credential's own application acting as the *source*. Requires a registered, `ACTIVE` integration from the caller's application to `target`, plus an `ACTIVE` environment and `ACTIVE` endpoint on the target — no service scope is checked here (see "Service Discovery" below for why). Never organization-scoped, never a query param a caller can override.
+- `GET /v1/platform/me` — the platform-scope analogue of `GET /v1/me`: any authenticated human may check `{ platformAdmin: boolean, platformRole: string | null }` for themselves. Never a 403 for a non-admin — this is self-introspection, not an administrative action.
+- `GET /v1/platform/admins` — the roster of everyone ever granted platform authority (active and revoked). Requires `platform.platform_admin.read`.
+- `POST /v1/platform/admins` — grants `{ userId, platformRoleKey? }` to an existing platform user (never creates one). Requires `platform.platform_admin.manage` — see "Platform Control Plane" below for why this structurally cannot self-escalate.
+- `PATCH /v1/platform/admins/:userId` — revokes/reactivates/reassigns `{ status?, platformRoleKey? }`. Requires `platform.platform_admin.manage`. Refuses (`409`) to revoke the platform's last active administrator.
 
 ### Applications are a registry, not a module boundary
 
@@ -390,7 +400,56 @@ Application A
 
 Synchronous (`A → discover B → call B directly`) and asynchronous (`B → webhook event → A`) are still two entirely separate mechanisms, never merged — Service Discovery tells A where B lives; Service Scopes authorize what A may request; Webhooks notify A when B changes something relevant. None of the three becomes the other.
 
-**Deliberately not built:** an API Gateway/reverse proxy of any kind, DNS management, a load balancer or service mesh, Kubernetes-style discovery, automatic health monitoring or failover, caching of discovery results (query-time lookup only, indexed for it — see `application_environments_application_key_unique`, `application_endpoints_environment_type_unique`, `application_integrations_source_target_unique`), organization-scoped integrations (platform-level only, see above), and any mutation HTTP endpoint for environments/endpoints/integrations (deferred to a future platform-admin context).
+**Deliberately not built:** an API Gateway/reverse proxy of any kind, DNS management, a load balancer or service mesh, Kubernetes-style discovery, automatic health monitoring or failover, caching of discovery results (query-time lookup only, indexed for it — see `application_environments_application_key_unique`, `application_endpoints_environment_type_unique`, `application_integrations_source_target_unique`), and organization-scoped integrations (platform-level only, see above). Mutation HTTP endpoints for environments/endpoints/integrations *were* deferred here pending a `PLATFORM_ADMIN` actor — Phase 13 ("Platform Control Plane" below) is that actor; the routes now exist, gated behind it.
+
+### Platform Control Plane
+
+Phase 12 established four global resources (Applications, Environments, Endpoints, Integrations) with service-layer mutations that had no safe HTTP surface, because nothing yet distinguished "an Organization's OWNER" from "someone who may administer the platform's own infrastructure." Phase 13 builds that missing actor:
+
+```
+Última Linha
+     │
+     │ HTTPS / API (future)
+     ▼
+UL Console                              ← NOT built in this phase, and will
+     │                                     never touch PostgreSQL directly
+     │ HTTPS / API
+     ▼
+UL Platform
+     │
+     ├── Platform RBAC (platform_roles/platform_permissions/platform_memberships)
+     ├── Application Registry            (mutable: PLATFORM_ADMIN only)
+     ├── Environments / Endpoints        (mutable: PLATFORM_ADMIN only)
+     ├── Integrations                    (mutable: PLATFORM_ADMIN only)
+     ├── Service Discovery
+     ├── Webhooks
+     └── Usage
+     │
+     ▼
+PostgreSQL
+```
+
+**Two authority contexts, never merged.** `Organization RBAC` (`roles`/`permissions`/`memberships` — OWNER/ADMIN/MANAGER/STAFF, scoped to one Organization each) and `Platform RBAC` (`platform_roles`/`platform_permissions`/`platform_memberships` — v1 seeds exactly one role, `PLATFORM_ADMIN`, scoped to the platform itself, not to any Organization) are two separate table families with no foreign key between them and no shared middleware. `requireOrganizationMembership`/`requirePermission` never consult `platform_memberships`; `requirePlatformMembership`/`requirePlatformPermission` (`middleware/platformContext.ts`, `middleware/requirePlatformPermission.ts`) never consult `memberships`. A user can simultaneously be an Organization's OWNER and the platform's PLATFORM_ADMIN — holding one implies nothing about the other, by construction, not by convention.
+
+**`PLATFORM_ADMIN` is resolved from `req.auth.userId` alone, never a route param.** Unlike `requireOrganizationMembership(paramName)`, which scopes by `:organizationId` in the URL, there is exactly one platform to administer — `platform_memberships` is unique on `userId` alone (`platform_memberships_user_unique`), not `(userId, somethingId)`. A service credential (`req.service`) is rejected outright with `403`, the same posture `requireServiceScope` already uses in the opposite direction (CLAUDE.md §6: human and service authentication are different concerns, never conflated) — platform administration is human-only.
+
+**Platform permissions are their own namespace, not new rows on `permissions`.** `platform_permissions` seeds exactly six keys: `platform.application.manage`, `platform.environment.manage`, `platform.endpoint.manage`, `platform.integration.manage`, `platform.platform_admin.read`, `platform.platform_admin.manage`. Reading the Application/Environment/Endpoint/Integration registries stays exactly as open as it always was (any authenticated user, unchanged from Phase 12) — only *mutating* them is new, and that is exactly what these six permissions gate. No `platform.application.read`-style permissions were added: they would have zero consumers (the existing `GET`s are deliberately still auth-only) and Phase 13's own discipline ("não criar dezenas de permissions sem necessidade") argues against a permission nothing checks. `platform.platform_admin.read` is the one read permission that does exist, because listing who holds platform authority is itself sensitive — the same reasoning `api_key.read` already established for listing an organization's credentials.
+
+**Bootstrap: the first `PLATFORM_ADMIN` is never created over HTTP.** `npm run platform:bootstrap-admin` (`scripts/bootstrap-platform-admin.ts` → `modules/platformAdmins/bootstrap.ts`) reads a target user id from the `PLATFORM_ADMIN_BOOTSTRAP_USER_ID` environment variable — never a value logged, never a secret (it's a UUID, not a credential) — and requires that user to already have a platform `users` row (i.e. have signed in via Supabase Auth at least once; this never creates a Supabase or platform user). It is idempotent for the same target, and refuses outright once *any* other active administrator already exists — bootstrap is a one-time event, not a standing side-channel for adding a second admin that bypasses `platform.platform_admin.manage` authorization. Every subsequent administrator is granted by an existing one through `POST /v1/platform/admins`, which is only reachable by someone who already holds `platform.platform_admin.manage` — structurally closing the "Organization OWNER promotes themselves to PLATFORM_ADMIN" escalation path this brief calls out explicitly: there is no code path from organization authority to platform authority, only from existing platform authority to new platform authority (plus the one non-HTTP bootstrap seam).
+
+**Last-active-admin protection**, mirroring the "cannot demote an organization's last active OWNER" rule `updateMembership` already enforces: `updatePlatformAdmin` (`modules/platformAdmins/service.ts`) refuses (`409`) to revoke the platform's sole remaining `ACTIVE` `platform_memberships` row, whether the actor is revoking someone else or themselves. Revocation is a status change (`ACTIVE` → `REVOKED`), never a delete — the roster (`GET /v1/platform/admins`) shows full history, matching how API keys/webhook endpoints/environments already treat "removed" as a status, not an erasure.
+
+**`PLATFORM_ADMIN` ≠ unrestricted tenant access — enforced by omission, not a check.** No code path grants a platform administrator implicit access to `customers`, `memberships`, `subscriptions`, or any other organization-scoped table; `requirePlatformMembership`/`requirePlatformPermission` are wired only onto the four global-resource route files (`applications.ts`, `environments.ts`, `integrations.ts`, `platform.ts`) and nowhere near `organizations.ts`/`memberships.ts`/`customers.ts`/etc. A `PLATFORM_ADMIN` who is not separately an Organization member gets exactly the same `403` from `requireOrganizationMembership` any other stranger would. `tests/platform-administration.test.ts` asserts this directly: a freshly-bootstrapped platform admin's `findActiveMembership` against an arbitrary organization id still resolves to `null`.
+
+**Global resources administered here:** Applications (`POST`/`PATCH /v1/applications[/:key]`), Environments (`POST`/`PATCH .../environments[/:key]`), Endpoints (`POST`/`PATCH .../endpoints[/:type]`), Integrations (`POST`/`PATCH .../integrations/:target`) — see "API — v1" above for exact routes. No `DELETE` on any of them: every one already had a lifecycle `status` (`ACTIVE`/`SUSPENDED`/`DEPRECATED` for Applications, `ACTIVE`/`INACTIVE` for the rest) *and* an `ON DELETE RESTRICT` foreign-key story before Phase 13 — deleting was never the intended lever, `status` is. The mutation service functions for Environments/Endpoints/Integrations are byte-for-byte the Phase 12 functions (`createEnvironment`, `updateEnvironmentStatus`, `createEndpoint`, `updateEndpointStatus`, `createIntegration`, `updateIntegrationStatus`) — already validated, audited and tested; Phase 13 only added the HTTP surface and the permission gating it. `updateIntegrationStatus` gained one new optional `description` field (its `status` argument became optional too) so `PATCH` can update either independently, matching what `updateIntegrationSchema` accepts.
+
+**Service Scopes and Meters stay read-only — a deliberate scope decision, not an oversight.** CLAUDE.md's Phase 13 brief explicitly allows leaving these registries untouched if nothing concretely needs mutation yet, and nothing does: no product has asked to add a scope or meter, and Phase 13's own stated objective (Applications/Environments/Endpoints/Integrations/PlatformAdmin) never mentions them. Adding `platform.service_scope.manage`/`platform.meter.manage` now would be permissions with zero callers. Revisit when a real product integration needs a new scope or meter — the same "registry, seed-only, no endpoint yet" posture these two tables have always had (see "Service Scopes" above).
+
+**Audit**, reusing `audit_logs` — no second logging system: `platform.application.created`/`.updated`, `platform.admin.created`/`.updated`/`.revoked`. Environment/Endpoint/Integration mutations keep their existing Phase 12 action names (`environment.created`/`.updated`, `endpoint.created`/`.updated`, `integration.created`/`.updated`) unchanged — those functions and the tests asserting those exact strings already existed and were not rewritten; inventing new `platform.*`-prefixed names for them here would have been a gratuitous breaking rename with no functional benefit. No password, JWT, API secret or any credential is ever written to `metadata` — there is none to write; platform-admin audit metadata carries only `targetUserId`/`platformRoleKey`/`status`, the same non-secret shape every other audit entry in this codebase already uses.
+
+**UL Console will consume these APIs; it will never open a direct connection to PostgreSQL.** Every capability Phase 13 exposes — `platform.me`, the admin roster, application/environment/endpoint/integration mutation — is reachable only through the versioned `/v1` HTTP surface, authenticated with the same Supabase JWT a human already uses everywhere else in this API. Building the Console itself remains explicitly out of scope for this phase.
+
+**Deliberately not built:** an API Gateway/reverse proxy, DNS management, a load balancer or service mesh, Kubernetes-style discovery, Redis, Kafka, queues, automatic health monitoring or failover, a billing/payments/subscription-billing engine, generic tenant-private-data administration for `PLATFORM_ADMIN`, a second/richer platform role beyond `PLATFORM_ADMIN` (the `platform_roles` catalog table exists so adding one later is a data change, not a schema change), a custom OAuth flow, and the UL Console frontend itself.
 
 ### Role assignment vs. role definition
 

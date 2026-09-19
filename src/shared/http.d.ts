@@ -27,12 +27,29 @@ export interface ServiceAuthContext {
   scopes: string[];
 }
 
+/**
+ * Resolved by `middleware/platformContext.ts` from `req.auth.userId` alone
+ * — there is no route param to scope this by (unlike
+ * `OrganizationMembershipContext`, which is per-:organizationId): the
+ * platform has exactly one control plane, not many tenants. Presence of
+ * this field means "this human is an active platform administrator"; its
+ * absence never implies anything about any `req.membership` and vice versa
+ * — see CLAUDE.md's Phase 13 brief "PLATFORM_ADMIN ≠ unrestricted tenant
+ * access".
+ */
+export interface PlatformAdminContext {
+  platformMembershipId: string;
+  platformRoleId: string;
+  platformRoleKey: string;
+}
+
 declare global {
   namespace Express {
     interface Request {
       auth?: AuthenticatedActor;
       membership?: OrganizationMembershipContext;
       service?: ServiceAuthContext;
+      platformAdmin?: PlatformAdminContext;
     }
   }
 }

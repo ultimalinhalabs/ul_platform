@@ -124,7 +124,8 @@ export async function getIntegrationRecord(
 export async function updateIntegrationStatus(input: {
   sourceApplicationKey: string;
   targetApplicationKey: string;
-  status: "ACTIVE" | "INACTIVE";
+  status?: "ACTIVE" | "INACTIVE";
+  description?: string;
   actorUserId?: string;
 }) {
   const source = await getApplicationRecord(input.sourceApplicationKey);
@@ -133,7 +134,11 @@ export async function updateIntegrationStatus(input: {
 
   const [updated] = await db
     .update(applicationIntegrations)
-    .set({ status: input.status, updatedAt: new Date() })
+    .set({
+      ...(input.status ? { status: input.status } : {}),
+      ...(input.description !== undefined ? { description: input.description } : {}),
+      updatedAt: new Date(),
+    })
     .where(eq(applicationIntegrations.id, current.id))
     .returning();
   if (!updated) throw new NotFoundError("No such integration is registered");
@@ -148,6 +153,7 @@ export async function updateIntegrationStatus(input: {
       sourceApplicationKey: input.sourceApplicationKey,
       targetApplicationKey: input.targetApplicationKey,
       status: input.status,
+      description: input.description,
     },
   });
 

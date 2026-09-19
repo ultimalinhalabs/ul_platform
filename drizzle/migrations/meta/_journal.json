@@ -57,6 +57,13 @@
       "when": 1789615637134,
       "tag": "0007_previous_spencer_smythe",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789696980398,
+      "tag": "0008_square_leopardon",
+      "breakpoints": true
     }
   ]
 }

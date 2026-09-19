@@ -13,6 +13,9 @@ import {
   permissions,
   planEntitlements,
   plans,
+  platformPermissions,
+  platformRolePermissions,
+  platformRoles,
   rolePermissions,
   roles,
   serviceScopes,
@@ -28,6 +31,9 @@ import {
   PERMISSIONS,
   PLAN_ENTITLEMENTS,
   PLANS,
+  PLATFORM_PERMISSIONS,
+  PLATFORM_ROLES,
+  PLATFORM_ROLE_PERMISSIONS,
   ROLES,
   ROLE_PERMISSIONS,
   SERVICE_SCOPES,
@@ -86,6 +92,46 @@ export async function seed() {
         .values(rolePermissionRows)
         .onConflictDoNothing({
           target: [rolePermissions.roleId, rolePermissions.permissionId],
+        });
+    }
+
+    const platformRoleRows = await tx
+      .insert(platformRoles)
+      .values(PLATFORM_ROLES.map((r) => ({ ...r })))
+      .onConflictDoUpdate({
+        target: platformRoles.key,
+        set: { name: sql`excluded.name`, description: sql`excluded.description`, updatedAt: sql`now()` },
+      })
+      .returning({ id: platformRoles.id, key: platformRoles.key });
+
+    const platformPermRows = await tx
+      .insert(platformPermissions)
+      .values(PLATFORM_PERMISSIONS.map((p) => ({ ...p })))
+      .onConflictDoUpdate({
+        target: platformPermissions.key,
+        set: { description: sql`excluded.description`, updatedAt: sql`now()` },
+      })
+      .returning({ id: platformPermissions.id, key: platformPermissions.key });
+
+    const platformRoleIdByKey = new Map(platformRoleRows.map((r) => [r.key, r.id]));
+    const platformPermIdByKey = new Map(platformPermRows.map((p) => [p.key, p.id]));
+
+    const platformRolePermissionRows = Object.entries(PLATFORM_ROLE_PERMISSIONS).flatMap(([roleKey, permKeys]) => {
+      const platformRoleId = platformRoleIdByKey.get(roleKey);
+      if (!platformRoleId) throw new Error(`Seed error: platform role "${roleKey}" was not upserted`);
+      return permKeys.map((permKey) => {
+        const platformPermissionId = platformPermIdByKey.get(permKey);
+        if (!platformPermissionId) throw new Error(`Seed error: platform permission "${permKey}" was not upserted`);
+        return { platformRoleId, platformPermissionId };
+      });
+    });
+
+    if (platformRolePermissionRows.length > 0) {
+      await tx
+        .insert(platformRolePermissions)
+        .values(platformRolePermissionRows)
+        .onConflictDoNothing({
+          target: [platformRolePermissions.platformRoleId, platformRolePermissions.platformPermissionId],
         });
     }
 
@@ -264,6 +310,9 @@ export async function seed() {
       permissions: permRows.length,
       roles: roleRows.length,
       rolePermissions: rolePermissionRows.length,
+      platformRoles: platformRoleRows.length,
+      platformPermissions: platformPermRows.length,
+      platformRolePermissions: platformRolePermissionRows.length,
       plans: planRows.length,
       planEntitlements: planEntitlementRows.length,
       serviceScopes: serviceScopeRows.length,

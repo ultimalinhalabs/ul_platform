@@ -51,10 +51,19 @@ function startReceiver(port: number, received: CapturedDelivery[]): Promise<http
 async function main() {
   const { env } = await import("../src/config/env.js");
   const { db, queryClient } = await import("../src/db/index.js");
-  const { organizations, users } = await import("../src/db/schema/index.js");
+  const {
+    applicationEnvironments,
+    applicationIntegrations,
+    applications,
+    auditLogs,
+    organizations,
+    platformMemberships,
+    platformRoles,
+    users,
+  } = await import("../src/db/schema/index.js");
   const { seed } = await import("../src/db/seed/index.js");
   const { verifyWebhookSignature } = await import("../src/modules/webhooks/signature.js");
-  const { eq } = await import("drizzle-orm");
+  const { eq, or } = await import("drizzle-orm");
 
   const BASE = `http://127.0.0.1:${env.PORT}/v1`;
 
@@ -411,11 +420,192 @@ async function main() {
     r.status === 200 && !("organizationId" in (r.json?.data ?? {})),
   );
 
+  // --- Platform Administration ---
+  // Grants a platform-admin fixture directly (bypassing the one-time
+  // bootstrap restriction — see modules/platformAdmins/bootstrap.ts, which
+  // deliberately refuses once *any* real admin exists on this shared
+  // database). Mirrors how this script already seeds organizations/API
+  // keys directly rather than going through a setup-only HTTP endpoint.
+
+  const platformAdminId = randomUUID();
+  const platformAdminToken = await mintUserToken(
+    platformAdminId,
+    `smoke-platform-admin-${platformAdminId}@test.ul-platform.invalid`,
+  );
+  await call("GET", "/me", { token: platformAdminToken }); // materializes the `users` row via ensureUserExists
+  const [platformAdminRoleRow] = await db
+    .select({ id: platformRoles.id })
+    .from(platformRoles)
+    .where(eq(platformRoles.key, "PLATFORM_ADMIN"));
+  if (!platformAdminRoleRow) throw new Error("PLATFORM_ADMIN role not seeded");
+  await db.insert(platformMemberships).values({ userId: platformAdminId, platformRoleId: platformAdminRoleRow.id });
+
+  const plainUserId = randomUUID();
+  const plainUserToken = await mintUserToken(plainUserId, `smoke-plain-${plainUserId}@test.ul-platform.invalid`);
+  await call("GET", "/me", { token: plainUserToken }); // materializes the `users` row, no org, no platform role
+
+  r = await call("GET", "/platform/me", { token: platformAdminToken });
+  check(
+    "GET /platform/me for the platform admin reports platformAdmin: true",
+    r.status === 200 && r.json?.data?.platformAdmin === true && r.json?.data?.platformRole === "PLATFORM_ADMIN",
+  );
+
+  r = await call("GET", "/platform/me", { token: tokenA });
+  check(
+    "GET /platform/me for an Organization OWNER (no platform role) reports platformAdmin: false, not an error",
+    r.status === 200 && r.json?.data?.platformAdmin === false,
+  );
+
+  r = await call("POST", "/applications", { token: tokenA, body: { key: "SMOKE_SHOULD_FAIL", name: "x" } });
+  check("POST /applications as an Organization OWNER -> 403", r.status === 403);
+
+  r = await call("POST", "/applications", { token: plainUserToken, body: { key: "SMOKE_SHOULD_FAIL", name: "x" } });
+  check("POST /applications as a plain authenticated user -> 403", r.status === 403);
+
+  r = await call("POST", "/applications", { body: { key: "SMOKE_SHOULD_FAIL", name: "x" } });
+  check("POST /applications with no bearer token -> 401", r.status === 401);
+
+  r = await call("POST", "/applications", { token: "Bearer garbage-not-a-real-token", body: { key: "x", name: "x" } });
+  check("POST /applications with a malformed token -> 401", r.status === 401);
+
+  const smokeAppKey = `SMOKE_APP_${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  r = await call("POST", "/applications", {
+    token: platformAdminToken,
+    body: { key: smokeAppKey, name: "Smoke Test App", description: "created by scripts/smoke.ts" },
+  });
+  check("POST /applications as PLATFORM_ADMIN -> 201", r.status === 201 && r.json?.data?.status === "ACTIVE");
+
+  r = await call("POST", "/applications", { token: platformAdminToken, body: { key: smokeAppKey, name: "dup" } });
+  check("POST /applications with a duplicate key -> 409", r.status === 409);
+
+  r = await call("PATCH", `/applications/${smokeAppKey}`, { token: platformAdminToken, body: { status: "SUSPENDED" } });
+  check("PATCH /applications/:key as PLATFORM_ADMIN -> 200, SUSPENDED", r.status === 200 && r.json?.data?.status === "SUSPENDED");
+
+  r = await call("PATCH", `/applications/${smokeAppKey}`, { token: tokenA, body: { status: "ACTIVE" } });
+  check("PATCH /applications/:key as an Organization OWNER -> 403", r.status === 403);
+
+  r = await call("PATCH", "/applications/NOT_A_REAL_APP", { token: platformAdminToken, body: { status: "ACTIVE" } });
+  check("PATCH /applications/:key for an unknown application -> 404", r.status === 404);
+
+  const appCreatedAudit = await db.select().from(auditLogs).where(eq(auditLogs.targetId, smokeAppKey));
+  check(
+    "platform.application.created was audited for this exact key",
+    appCreatedAudit.some((e) => e.action === "platform.application.created"),
+  );
+
+  r = await call("POST", `/applications/${smokeAppKey}/environments`, { token: platformAdminToken, body: { key: "staging" } });
+  check("POST .../environments as PLATFORM_ADMIN -> 201", r.status === 201);
+
+  r = await call("POST", `/applications/${smokeAppKey}/environments`, { token: tokenA, body: { key: "production" } });
+  check("POST .../environments as an Organization OWNER -> 403", r.status === 403);
+
+  r = await call("PATCH", `/applications/${smokeAppKey}/environments/staging`, {
+    token: platformAdminToken,
+    body: { status: "INACTIVE" },
+  });
+  check("PATCH .../environments/:key as PLATFORM_ADMIN -> 200, INACTIVE", r.status === 200 && r.json?.data?.status === "INACTIVE");
+  await call("PATCH", `/applications/${smokeAppKey}/environments/staging`, { token: platformAdminToken, body: { status: "ACTIVE" } });
+
+  r = await call("POST", `/applications/${smokeAppKey}/environments/staging/endpoints`, {
+    token: platformAdminToken,
+    body: { type: "API", baseUrl: "http://insecure-not-production.example" },
+  });
+  check("POST .../endpoints with a valid non-production http URL -> 201", r.status === 201);
+
+  r = await call("POST", `/applications/${smokeAppKey}/environments/staging/endpoints`, {
+    token: platformAdminToken,
+    body: { type: "API", baseUrl: "https://duplicate.example" },
+  });
+  check("POST .../endpoints duplicate type for the same environment -> 409", r.status === 409);
+
+  r = await call("PATCH", `/applications/${smokeAppKey}/environments/staging/endpoints/API`, {
+    token: platformAdminToken,
+    body: { status: "INACTIVE" },
+  });
+  check("PATCH .../endpoints/:type as PLATFORM_ADMIN -> 200, INACTIVE", r.status === 200 && r.json?.data?.status === "INACTIVE");
+
+  r = await call("POST", `/applications/${smokeAppKey}/environments`, { token: platformAdminToken, body: { key: "production" } });
+  const prodEnvOk = r.status === 201;
+  r = await call("POST", `/applications/${smokeAppKey}/environments/production/endpoints`, {
+    token: platformAdminToken,
+    body: { type: "API", baseUrl: "http://not-https-in-production.example" },
+  });
+  check("POST .../endpoints rejects insecure HTTP in a production environment -> 400", prodEnvOk && r.status === 400);
+
+  r = await call("POST", `/applications/QUALE_A_DICA/integrations/${smokeAppKey}`, {
+    token: platformAdminToken,
+    body: { description: "smoke test integration" },
+  });
+  check("POST .../integrations/:target as PLATFORM_ADMIN -> 201", r.status === 201);
+
+  r = await call("POST", `/applications/QUALE_A_DICA/integrations/${smokeAppKey}`, { token: tokenA, body: {} });
+  check("POST .../integrations/:target as an Organization OWNER -> 403", r.status === 403);
+
+  r = await call("PATCH", `/applications/QUALE_A_DICA/integrations/${smokeAppKey}`, {
+    token: platformAdminToken,
+    body: { status: "INACTIVE" },
+  });
+  check("PATCH .../integrations/:target as PLATFORM_ADMIN -> 200, INACTIVE", r.status === 200 && r.json?.data?.status === "INACTIVE");
+
+  r = await call("GET", "/platform/admins", { token: tokenA });
+  check("GET /platform/admins as an Organization OWNER -> 403", r.status === 403);
+
+  r = await call("GET", "/platform/admins", { token: platformAdminToken });
+  check(
+    "GET /platform/admins as PLATFORM_ADMIN -> 200, includes the bootstrap fixture",
+    r.status === 200 && (r.json?.data ?? []).some((a: { userId: string }) => a.userId === platformAdminId),
+  );
+
+  // tokenB (org B's owner) is deliberately the actor for every "OWNER, not a
+  // platform admin" check below — ownerAId is about to be granted platform
+  // authority itself in this same flow, so reusing tokenA here would stop
+  // proving what the assertion name claims.
+  r = await call("POST", "/platform/admins", { token: tokenB, body: { userId: ownerAId } });
+  check("POST /platform/admins as an Organization OWNER (not a platform admin) -> 403", r.status === 403);
+
+  r = await call("POST", "/platform/admins", { token: platformAdminToken, body: { userId: ownerAId } });
+  check("POST /platform/admins grants a second admin -> 201", r.status === 201 && r.json?.data?.status === "ACTIVE");
+
+  r = await call("PATCH", `/platform/admins/${ownerAId}`, { token: platformAdminToken, body: { status: "REVOKED" } });
+  check("PATCH /platform/admins/:userId revokes the second admin -> 200, REVOKED", r.status === 200 && r.json?.data?.status === "REVOKED");
+
+  r = await call("PATCH", `/platform/admins/${platformAdminId}`, {
+    token: platformAdminToken,
+    body: { status: "REVOKED" },
+  });
+  check(
+    "PATCH /platform/admins/:userId refuses to revoke the platform's last active administrator -> 409",
+    r.status === 409,
+  );
+
   receiver.close();
+
+  // Platform-level fixtures created directly through the mutation endpoints
+  // above are real rows in the shared application/environment/integration
+  // registries — clean them up explicitly so repeated `npm run smoke` runs
+  // don't accumulate SMOKE_APP_* junk applications. FK order matters:
+  // integrations/environments (RESTRICT on applicationId) before the
+  // application row itself; environments cascade their own endpoints.
+  const [smokeApp] = await db.select({ id: applications.id }).from(applications).where(eq(applications.key, smokeAppKey));
+  if (smokeApp) {
+    await db
+      .delete(applicationIntegrations)
+      .where(
+        or(
+          eq(applicationIntegrations.sourceApplicationId, smokeApp.id),
+          eq(applicationIntegrations.targetApplicationId, smokeApp.id),
+        ),
+      );
+    await db.delete(applicationEnvironments).where(eq(applicationEnvironments.applicationId, smokeApp.id));
+    await db.delete(applications).where(eq(applications.id, smokeApp.id));
+  }
+
   await db.delete(organizations).where(eq(organizations.id, orgAId));
   await db.delete(organizations).where(eq(organizations.id, orgBId));
-  await db.delete(users).where(eq(users.id, ownerAId));
+  await db.delete(users).where(eq(users.id, ownerAId)); // cascades platform_memberships (granted above)
   await db.delete(users).where(eq(users.id, ownerBId));
+  await db.delete(users).where(eq(users.id, platformAdminId)); // cascades platform_memberships
+  await db.delete(users).where(eq(users.id, plainUserId));
   await queryClient.end();
 
   console.log(`\n${passed}/${passed + failed} smoke assertions passed`);

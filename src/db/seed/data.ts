@@ -166,6 +166,46 @@ export const APPLICATION_INTEGRATIONS: { sourceApplicationKey: string; targetApp
   },
 ];
 
+/**
+ * Platform-authority roles — separate namespace from ROLES (organization
+ * roles) on purpose, see db/schema/platformRoles.ts. v1 only ever needs one
+ * tier; the catalog table exists so a second tier is a data change, not a
+ * schema change, if the platform ever needs one.
+ */
+export const PLATFORM_ROLES = [
+  {
+    key: "PLATFORM_ADMIN",
+    name: "Platform Admin",
+    description: "Full administrative control of the platform's own global infrastructure (control plane).",
+  },
+] as const;
+
+/**
+ * Platform-authority permissions — separate namespace from PERMISSIONS on
+ * purpose (see db/schema/platformPermissions.ts). Read access to the
+ * Application/Environment/Endpoint/Integration registries is deliberately
+ * NOT gated behind a platform permission here: those `GET` routes have
+ * always been open to any authenticated user (non-sensitive platform
+ * metadata, same posture as `/v1/roles`/`/v1/service-scopes`) and Phase 13
+ * does not revoke that — only *mutating* them is new, and that is what
+ * these permissions gate. `platform.platform_admin.read` is the one read
+ * permission that does exist, because listing who holds platform authority
+ * is itself sensitive (same reasoning `api_key.read` already established
+ * for listing an organization's credentials).
+ */
+export const PLATFORM_PERMISSIONS = [
+  { key: "platform.application.manage", description: "Create/update the global Application registry." },
+  { key: "platform.environment.manage", description: "Create/update Application Environments." },
+  { key: "platform.endpoint.manage", description: "Create/update Application Endpoints." },
+  { key: "platform.integration.manage", description: "Create/update Application Integrations." },
+  { key: "platform.platform_admin.read", description: "View the roster of platform administrators." },
+  { key: "platform.platform_admin.manage", description: "Grant/revoke platform administrator access." },
+] as const;
+
+export const PLATFORM_ROLE_PERMISSIONS: Record<(typeof PLATFORM_ROLES)[number]["key"], string[]> = {
+  PLATFORM_ADMIN: PLATFORM_PERMISSIONS.map((p) => p.key),
+};
+
 export const ROLES = [
   { key: "OWNER", name: "Owner", description: "Full administrative control of the organization." },
   { key: "ADMIN", name: "Admin", description: "Manages members and organization settings." },
