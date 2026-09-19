@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { apiKeyScopes, apiKeys, applications, serviceScopes } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
@@ -127,6 +127,125 @@ export async function createOrganizationApiKey(input: {
     // shown exactly once — never persisted, never logged, never re-derivable
     secret: buildApiKeyToken(row.id, secret),
   };
+}
+
+/**
+ * Creates a platform-level (organizationId = null) API key — "the NA_PISTA
+ * backend itself" rather than any one Organization's integration with it.
+ * Schema-anticipated since Phase 12 (see db/schema/apiKeys.ts's comment)
+ * but never reachable over HTTP until now: this is exactly the "controlled
+ * future provisioning path" that comment describes, gated behind
+ * `platform.credential.manage` rather than any Organization permission —
+ * see routes/v1/platform.ts. Otherwise identical to
+ * `createOrganizationApiKey`: same secret generation, same scope
+ * validation, same shown-once contract.
+ */
+export async function createPlatformApiKey(input: {
+  applicationKey: string;
+  actorUserId: string;
+  expiresAt?: Date;
+  scopes?: string[];
+}) {
+  const [application] = await db
+    .select({ id: applications.id, key: applications.key })
+    .from(applications)
+    .where(eq(applications.key, input.applicationKey))
+    .limit(1);
+  if (!application) throw new NotFoundError(`Unknown application: ${input.applicationKey}`);
+
+  const resolvedScopes = await validateRequestedScopes(application.id, application.key, input.scopes ?? []);
+
+  const secret = generateApiKeySecret();
+  const secretHash = hashApiKeySecret(secret);
+
+  const row = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(apiKeys)
+      .values({
+        secretHash,
+        applicationId: application.id,
+        organizationId: null,
+        createdByUserId: input.actorUserId,
+        expiresAt: input.expiresAt,
+      })
+      .returning();
+    if (!created) throw new Error("Failed to create platform API key");
+
+    if (resolvedScopes.length > 0) {
+      await tx.insert(apiKeyScopes).values(resolvedScopes.map((s) => ({ apiKeyId: created.id, serviceScopeId: s.id })));
+    }
+
+    return created;
+  });
+
+  await recordAuditEvent({
+    actorUserId: input.actorUserId,
+    applicationId: application.id,
+    action: "platform.credential.created",
+    targetType: "api_key",
+    targetId: row.id,
+    metadata: { applicationKey: input.applicationKey, scopes: resolvedScopes.map((s) => s.key) },
+  });
+
+  return {
+    ...shapeMetadata({ ...row, applicationKey: application.key }, resolvedScopes.map((s) => s.key)),
+    // shown exactly once — never persisted, never logged, never re-derivable
+    secret: buildApiKeyToken(row.id, secret),
+  };
+}
+
+/** Every platform-level credential — organizationId IS NULL, never a tenant's. */
+export async function listPlatformApiKeys() {
+  const rows = await db
+    .select({
+      id: apiKeys.id,
+      organizationId: apiKeys.organizationId,
+      status: apiKeys.status,
+      expiresAt: apiKeys.expiresAt,
+      revokedAt: apiKeys.revokedAt,
+      createdAt: apiKeys.createdAt,
+      applicationKey: applications.key,
+    })
+    .from(apiKeys)
+    .innerJoin(applications, eq(applications.id, apiKeys.applicationId))
+    .where(isNull(apiKeys.organizationId))
+    .orderBy(apiKeys.createdAt);
+
+  const scopesByKeyId = await getGrantedScopeKeysByApiKeyId(rows.map((r) => r.id));
+  return rows.map((row) => shapeMetadata(row, scopesByKeyId.get(row.id) ?? []));
+}
+
+/** Tenant-safe in the other direction: organizationId IS NULL is always part of the WHERE, so this can never touch an Organization's own key. */
+export async function revokePlatformApiKey(input: { keyId: string; actorUserId: string }) {
+  const [current] = await db
+    .select({ id: apiKeys.id, status: apiKeys.status, applicationId: apiKeys.applicationId })
+    .from(apiKeys)
+    .where(and(eq(apiKeys.id, input.keyId), isNull(apiKeys.organizationId)))
+    .limit(1);
+  if (!current) throw new NotFoundError("Platform API key not found");
+  if (current.status === "REVOKED") throw new ConflictError("API key is already revoked");
+
+  const [updated] = await db
+    .update(apiKeys)
+    .set({ status: "REVOKED", revokedAt: new Date(), updatedAt: new Date() })
+    .where(eq(apiKeys.id, input.keyId))
+    .returning();
+  if (!updated) throw new NotFoundError("Platform API key not found");
+
+  await recordAuditEvent({
+    actorUserId: input.actorUserId,
+    applicationId: current.applicationId,
+    action: "platform.credential.revoked",
+    targetType: "api_key",
+    targetId: input.keyId,
+  });
+
+  const [application] = await db
+    .select({ key: applications.key })
+    .from(applications)
+    .where(eq(applications.id, current.applicationId));
+
+  return shapeMetadata({ ...updated, applicationKey: application!.key }, await getGrantedScopeKeys(updated.id));
 }
 
 export async function listApiKeysForOrganization(organizationId: string) {

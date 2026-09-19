@@ -2,6 +2,8 @@ import { Router } from "express";
 import { authenticate } from "../../middleware/authenticate.js";
 import { requirePlatformMembership } from "../../middleware/platformContext.js";
 import { requirePlatformPermission } from "../../middleware/requirePlatformPermission.js";
+import { platformAuditLogQuerySchema } from "../../modules/audit/schemas.js";
+import { listPlatformAuditLogs } from "../../modules/audit/service.js";
 import { grantPlatformAdminSchema, updatePlatformAdminSchema } from "../../modules/platformAdmins/schemas.js";
 import {
   findActivePlatformAdmin,
@@ -99,5 +101,23 @@ platformRouter.patch(
       actorUserId: req.auth!.userId,
     });
     ok(res, admin);
+  }),
+);
+
+/**
+ * Control-plane audit trail — requires `platform.audit.read`. Never
+ * returns a tenant/Organization event: `listPlatformAuditLogs` hard-codes
+ * `organizationId IS NULL`, not a query the client can influence — see
+ * modules/audit/service.ts.
+ */
+platformRouter.get(
+  "/platform/audit-logs",
+  authenticate,
+  requirePlatformMembership(),
+  requirePlatformPermission("platform.audit.read"),
+  asyncHandler(async (req, res) => {
+    const query = platformAuditLogQuerySchema.parse(req.query);
+    const result = await listPlatformAuditLogs(query);
+    ok(res, result);
   }),
 );

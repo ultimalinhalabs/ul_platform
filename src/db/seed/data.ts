@@ -200,6 +200,12 @@ export const PLATFORM_PERMISSIONS = [
   { key: "platform.integration.manage", description: "Create/update Application Integrations." },
   { key: "platform.platform_admin.read", description: "View the roster of platform administrators." },
   { key: "platform.platform_admin.manage", description: "Grant/revoke platform administrator access." },
+  { key: "platform.audit.read", description: "Read the control-plane audit log (never tenant/organization events)." },
+  {
+    key: "platform.credential.read",
+    description: "View platform-level (organizationId = null) API key metadata — never secrets.",
+  },
+  { key: "platform.credential.manage", description: "Issue/revoke platform-level (organizationId = null) API keys." },
 ] as const;
 
 export const PLATFORM_ROLE_PERMISSIONS: Record<(typeof PLATFORM_ROLES)[number]["key"], string[]> = {

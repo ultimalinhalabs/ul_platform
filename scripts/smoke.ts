@@ -578,6 +578,100 @@ async function main() {
     r.status === 409,
   );
 
+  // --- Platform Audit ---
+
+  r = await call("GET", "/platform/audit-logs", { token: tokenA });
+  check("GET /platform/audit-logs as an Organization OWNER -> 403", r.status === 403);
+
+  r = await call("GET", "/platform/audit-logs", { token: platformAdminToken });
+  check(
+    "GET /platform/audit-logs as PLATFORM_ADMIN -> 200, paginated shape",
+    r.status === 200 && Array.isArray(r.json?.data?.items) && "nextCursor" in (r.json?.data ?? {}),
+  );
+
+  r = await call(
+    "GET",
+    `/platform/audit-logs?action=platform.application.created&targetId=${smokeAppKey}`,
+    { token: platformAdminToken },
+  );
+  check(
+    "audit log finds this run's own platform.application.created event",
+    r.status === 200 && (r.json?.data?.items ?? []).some((e: { targetId: string }) => e.targetId === smokeAppKey),
+  );
+
+  r = await call("GET", "/platform/audit-logs?limit=1000000", { token: platformAdminToken });
+  check("GET /platform/audit-logs with an oversized limit is rejected, not silently clamped -> 400", r.status === 400);
+
+  r = await call("GET", "/platform/audit-logs?cursor=not-a-real-cursor", { token: platformAdminToken });
+  check("GET /platform/audit-logs with a malformed cursor -> 400", r.status === 400);
+
+  r = await call("GET", `/platform/audit-logs?action=api_key.created`, { token: platformAdminToken });
+  check(
+    "the control-plane audit endpoint never returns a tenant event (api_key.created), even filtered by its exact action",
+    r.status === 200 && (r.json?.data?.items ?? []).length === 0,
+  );
+
+  // --- Platform Credentials (platform-level API keys, organizationId = null) ---
+
+  r = await call("POST", "/platform/credentials", { token: tokenA, body: { applicationKey: "NA_PISTA" } });
+  check("POST /platform/credentials as an Organization OWNER -> 403", r.status === 403);
+
+  r = await call("POST", "/platform/credentials", {
+    token: platformAdminToken,
+    body: { applicationKey: "NA_PISTA", scopes: ["catalog.read"] },
+  });
+  check(
+    "POST /platform/credentials as PLATFORM_ADMIN -> 201, secret shown once",
+    r.status === 201 && typeof r.json?.data?.secret === "string" && r.json.data.secret.startsWith("ulk_"),
+  );
+  check("platform credential has organizationId: null", r.json?.data?.organizationId === null);
+  const platformCredentialId: string = r.json?.data?.id;
+  const platformCredentialSecret: string = r.json?.data?.secret;
+
+  r = await call("GET", "/platform/credentials", { token: tokenA });
+  check("GET /platform/credentials as an Organization OWNER -> 403", r.status === 403);
+
+  r = await call("GET", "/platform/credentials", { token: platformAdminToken });
+  check(
+    "GET /platform/credentials as PLATFORM_ADMIN -> 200, includes the key just created, never a secret field",
+    r.status === 200 &&
+      (r.json?.data ?? []).some((k: { id: string }) => k.id === platformCredentialId) &&
+      !JSON.stringify(r.json?.data ?? []).includes(platformCredentialSecret),
+  );
+
+  r = await call("GET", "/service/me", { token: platformCredentialSecret });
+  check(
+    "the new platform credential authenticates and reports organizationId: null via /service/me",
+    r.status === 200 && r.json?.data?.application === "NA_PISTA" && r.json?.data?.organizationId === null,
+  );
+
+  r = await call("POST", `/platform/credentials/${platformCredentialId}/revoke`, { token: tokenA });
+  check("POST /platform/credentials/:id/revoke as an Organization OWNER -> 403", r.status === 403);
+
+  r = await call("POST", `/platform/credentials/${platformCredentialId}/revoke`, { token: platformAdminToken });
+  check(
+    "POST /platform/credentials/:id/revoke as PLATFORM_ADMIN -> 200, REVOKED",
+    r.status === 200 && r.json?.data?.status === "REVOKED",
+  );
+
+  r = await call("POST", `/platform/credentials/${platformCredentialId}/revoke`, { token: platformAdminToken });
+  check("revoking an already-revoked platform credential -> 409", r.status === 409);
+
+  r = await call("GET", "/service/me", { token: platformCredentialSecret });
+  check("a revoked platform credential can no longer authenticate -> 401", r.status === 401);
+
+  r = await call("POST", `/organizations/${orgAId}/api-keys`, {
+    token: tokenA,
+    body: { applicationKey: "NA_PISTA", scopes: [] },
+  });
+  const orgScopedKeyId: string = r.json?.data?.id;
+  r = await call("POST", `/platform/credentials/${orgScopedKeyId}/revoke`, { token: platformAdminToken });
+  check(
+    "the platform credential revoke route can never reach an Organization's own key -> 404",
+    r.status === 404,
+  );
+  await call("POST", `/organizations/${orgAId}/api-keys/${orgScopedKeyId}/revoke`, { token: tokenA });
+
   receiver.close();
 
   // Platform-level fixtures created directly through the mutation endpoints

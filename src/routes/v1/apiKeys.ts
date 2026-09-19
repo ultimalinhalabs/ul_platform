@@ -2,12 +2,17 @@ import { Router } from "express";
 import { authenticate } from "../../middleware/authenticate.js";
 import { requireOrganizationMembership } from "../../middleware/organizationContext.js";
 import { requirePermission } from "../../middleware/requirePermission.js";
+import { requirePlatformMembership } from "../../middleware/platformContext.js";
+import { requirePlatformPermission } from "../../middleware/requirePlatformPermission.js";
 import { createApiKeySchema } from "../../modules/apiKeys/schemas.js";
 import {
   createOrganizationApiKey,
+  createPlatformApiKey,
   getApiKeyDetail,
   listApiKeysForOrganization,
+  listPlatformApiKeys,
   revokeApiKey,
+  revokePlatformApiKey,
 } from "../../modules/apiKeys/service.js";
 import { asyncHandler } from "../../shared/asyncHandler.js";
 import { paramString } from "../../shared/params.js";
@@ -73,6 +78,58 @@ apiKeysRouter.post(
   asyncHandler(async (req, res) => {
     const apiKey = await revokeApiKey({
       organizationId: req.membership!.organizationId,
+      keyId: paramString(req.params.keyId)!,
+      actorUserId: req.auth!.userId,
+    });
+    ok(res, apiKey);
+  }),
+);
+
+/**
+ * Platform-level (organizationId = null) credentials — "the NA_PISTA
+ * backend itself", not any one Organization's integration with it. A
+ * completely separate authorization chain from the routes above: gated
+ * behind `platform.credential.*`, resolved purely from
+ * `platform_memberships` via `requirePlatformMembership`, never from any
+ * Organization/Membership table. See modules/apiKeys/service.ts's
+ * createPlatformApiKey for why this was schema-ready since Phase 12 but
+ * unreachable over HTTP until now.
+ */
+apiKeysRouter.post(
+  "/platform/credentials",
+  authenticate,
+  requirePlatformMembership(),
+  requirePlatformPermission("platform.credential.manage"),
+  asyncHandler(async (req, res) => {
+    const body = createApiKeySchema.parse(req.body);
+    const apiKey = await createPlatformApiKey({
+      applicationKey: body.applicationKey,
+      expiresAt: body.expiresAt,
+      scopes: body.scopes,
+      actorUserId: req.auth!.userId,
+    });
+    // secret is present in this one response only — never again
+    ok(res, apiKey, 201);
+  }),
+);
+
+apiKeysRouter.get(
+  "/platform/credentials",
+  authenticate,
+  requirePlatformMembership(),
+  requirePlatformPermission("platform.credential.read"),
+  asyncHandler(async (_req, res) => {
+    ok(res, await listPlatformApiKeys());
+  }),
+);
+
+apiKeysRouter.post(
+  "/platform/credentials/:keyId/revoke",
+  authenticate,
+  requirePlatformMembership(),
+  requirePlatformPermission("platform.credential.manage"),
+  asyncHandler(async (req, res) => {
+    const apiKey = await revokePlatformApiKey({
       keyId: paramString(req.params.keyId)!,
       actorUserId: req.auth!.userId,
     });
