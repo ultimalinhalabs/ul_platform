@@ -63,16 +63,23 @@ async function main() {
   } = await import("../src/db/schema/index.js");
   const { seed } = await import("../src/db/seed/index.js");
   const { verifyWebhookSignature } = await import("../src/modules/webhooks/signature.js");
+  const { EXPECTED_ISSUER } = await import("../src/integrations/supabase/jwt.js");
   const { eq, or } = await import("drizzle-orm");
 
   const BASE = `http://127.0.0.1:${env.PORT}/v1`;
 
-  async function call(method: string, path: string, opts: { token?: string; body?: unknown } = {}) {
+  async function call(
+    method: string,
+    path: string,
+    opts: { token?: string; body?: unknown; origin?: string; headers?: Record<string, string> } = {},
+  ) {
     const res = await fetch(`${BASE}${path}`, {
       method,
       headers: {
         "content-type": "application/json",
         ...(opts.token ? { authorization: `Bearer ${opts.token}` } : {}),
+        ...(opts.origin ? { origin: opts.origin } : {}),
+        ...opts.headers,
       },
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     });
@@ -83,8 +90,12 @@ async function main() {
     } catch {
       json = undefined;
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- smoke script only, response shape varies per assertion
-    return { status: res.status, json: json as { data?: any; error?: any } | undefined };
+    return {
+      status: res.status,
+      headers: res.headers,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- smoke script only, response shape varies per assertion
+      json: json as { data?: any; error?: any } | undefined,
+    };
   }
 
   async function mintUserToken(userId: string, email: string) {
@@ -93,6 +104,7 @@ async function main() {
       .setProtectedHeader({ alg: "HS256" })
       .setSubject(userId)
       .setIssuedAt()
+      .setIssuer(EXPECTED_ISSUER)
       .setExpirationTime("10m")
       .sign(secret);
   }
@@ -120,7 +132,42 @@ async function main() {
   const tokenB = await mintUserToken(ownerBId, `smoke-b-${ownerBId}@test.ul-platform.invalid`);
 
   let r = await call("GET", "/health");
-  check("GET /health -> 200", r.status === 200);
+  check("GET /health -> 200", r.status === 200 && r.json?.data?.status === "ok");
+
+  r = await call("GET", "/health/ready");
+  check("GET /health/ready -> 200 (DB reachable)", r.status === 200 && r.json?.data?.status === "ready");
+  check(
+    "readiness response never mentions the database host/connection string",
+    !JSON.stringify(r.json ?? {}).includes("supabase.co") && !JSON.stringify(r.json ?? {}).includes("postgres://"),
+  );
+
+  // --- Request ID ---
+
+  r = await call("GET", "/health");
+  check("every response carries an X-Request-ID header", Boolean(r.headers.get("x-request-id")));
+
+  r = await call("GET", "/health", { headers: { "X-Request-ID": "client-supplied-id-123" } });
+  check("a valid client-supplied X-Request-ID is echoed back, not replaced", r.headers.get("x-request-id") === "client-supplied-id-123");
+
+  r = await call("GET", "/health", { headers: { "X-Request-ID": "invalid id with spaces!" } });
+  check(
+    "an invalid client-supplied X-Request-ID is replaced with a fresh one, not rejected or passed through",
+    r.status === 200 && r.headers.get("x-request-id") !== "invalid id with spaces!" && Boolean(r.headers.get("x-request-id")),
+  );
+
+  // --- CORS ---
+
+  r = await call("GET", "/health", { origin: env.PLATFORM_ALLOWED_ORIGINS[0] });
+  check(
+    "an allow-listed origin receives Access-Control-Allow-Origin",
+    r.headers.get("access-control-allow-origin") === env.PLATFORM_ALLOWED_ORIGINS[0],
+  );
+
+  r = await call("GET", "/health", { origin: "https://not-an-allowed-origin.example" });
+  check(
+    "a disallowed origin receives no Access-Control-Allow-Origin (browser will block the response)",
+    r.headers.get("access-control-allow-origin") === null,
+  );
 
   r = await call("GET", "/me", { token: tokenA });
   check("GET /me (fresh user) -> 200", r.status === 200);

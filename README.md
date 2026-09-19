@@ -55,7 +55,8 @@ tests/           node:test suite (database/seed, authorization, identity, custom
 
 ## API — v1
 
-- `GET /v1/health` — liveness, no auth.
+- `GET /v1/health` — liveness, no auth, no dependencies (never touches PostgreSQL — see "Fase 16" below).
+- `GET /v1/health/ready` — readiness, no auth. Checks PostgreSQL connectivity; `503` (never host/connection-string detail) if unreachable.
 - `GET /v1/me` — the authenticated user + their memberships across organizations.
 - `POST /v1/organizations` — create an organization; the caller becomes its OWNER atomically. Platform-level (auth only, no org context yet).
 - `GET|PATCH|DELETE /v1/organizations/:organizationId` — requires active membership + `organization.read`/`update`/`delete`.
@@ -479,3 +480,47 @@ Two different things are easy to conflate:
 
 - **Role assignment** — "which role does this membership have?" Already existed (`PATCH .../memberships/:id` + `role.assign`), audited in this step (see above), tenant-isolated (a membership can only be reached through its own organization's route — cross-org membership IDs 404, not leak).
 - **Role definition** — "what permissions does the `ADMIN` role grant?" (i.e. editing `role_permissions` itself). **Deliberately not built in this step.** There's no `role.manage` permission and no endpoint to mutate `role_permissions`. Reasoning: (1) there's no `PLATFORM_ADMIN` actor distinct from organization members yet — an `OWNER`/`ADMIN` role_permissions editor today could only be gated by an org-scoped permission, which would let an organization owner redefine what `ADMIN` means *platform-wide*, breaking the platform/organization boundary (see CLAUDE.md §11); (2) v1 only needs 4 fixed, platform-defined roles (§2 "global roles + global permissions", not custom roles). Revisit when a real platform-admin context exists (Console phase).
+
+### Fase 16 — Production Readiness
+
+"Funciona" → "está preparado para operar com segurança e previsibilidade." No new product functionality — hardening, environment isolation, observability foundations, and documentation for a real Development → Staging → Production progression. **No production deployment was performed in this phase.**
+
+**Environment Strategy.** `APP_ENV` (`development`/`staging`/`production`) joins `NODE_ENV` — deliberately distinct, since staging and production both run `NODE_ENV=production` (for Node/library optimizations) but need their own identity for decisions `NODE_ENV` can't express. Config validation now refuses to boot `staging`/`production` with `PLATFORM_ALLOWED_ORIGINS` silently defaulted to `localhost:3000` — that default is `development`-only; a deployed environment must set it explicitly or the process exits before `app.listen`. No staging/production infrastructure has been provisioned — this is the config-level contract that infrastructure, when it exists, must satisfy.
+
+**CORS.** Unchanged in mechanism from Fase 15 (explicit `PLATFORM_ALLOWED_ORIGINS` allow-list, never `*`), now with an environment-strategy backstop above. Verified live via `scripts/smoke.ts`: an allow-listed origin gets `Access-Control-Allow-Origin`; a disallowed one gets none (the browser, not the server, is what actually blocks a disallowed origin — a non-browser caller still receives a normal response, just without that header).
+
+**Security headers.** `helmet()` (unchanged, already applied broadly). No Content-Security-Policy added — out of scope until a browser client that needs one exists on this side (the API returns JSON, not HTML). UL Console's own headers are documented in its README.
+
+**Request ID (`middleware/requestId.ts`).** Every request gets a `requestId` — a validated client-supplied `X-Request-ID` (`^[A-Za-z0-9._-]{1,128}$`) if present, otherwise a fresh UUID — set before any other middleware runs. Echoed on the `X-Request-ID` response header (never in the `{data}`/`{error}` JSON body — that contract doesn't change) and attached to every structured log line for that request. `cors()`'s `exposedHeaders` lets a browser's own JS read it back.
+
+**Structured logging (`shared/logger.ts`).** JSON lines to stdout/stderr — `{timestamp, level, environment, message, ...fields}` — no external shipper yet, just a machine-parseable foundation one can be pointed at later without rewriting call sites. `logger.debug` is silenced when `NODE_ENV=production` (health-check request-completed lines log at `debug`, so routine polling doesn't drown real traffic at `info`). Discipline, not type-enforced: never log a JWT, API key secret, webhook secret, password, or a `DATABASE_URL`/connection string.
+
+**Error handling.** The response contract is unchanged and identical in every environment — `errorHandler` never sent a stack trace, SQL, or credential to the client even before this phase; that was already correct. What changed: every branch now also emits a structured log line (`http.request.error` at `info` for expected 4xx outcomes, `error` with the full stack for a genuine 500), keyed by `requestId` so a generic client-facing message can still be correlated with the real cause server-side.
+
+**Health / Readiness (`GET /v1/health`, `GET /v1/health/ready`).** Split on purpose: liveness (`/health`) has zero dependencies — if PostgreSQL is down, it must still answer `200`, because a liveness probe that depends on a downstream service causes an orchestrator to kill and restart a perfectly healthy process instead of just routing traffic away from it. Readiness (`/health/ready`) runs `select 1` and returns `503` (never host/connection-string/driver detail) if the database isn't reachable — verified live that its response never mentions `supabase.co` or `postgres://`.
+
+**Graceful shutdown (`server.ts`).** `SIGTERM`/`SIGINT` now: stop accepting new connections (`server.close()`) → let in-flight requests finish → close the DB pool (`queryClient.end({ timeout: 5 })`) → exit, with a 10s hard ceiling (`process.exit(1)`) so a stuck connection can never hang the process indefinitely.
+
+**Database pool.** Unchanged from Fase 15 (`max: 5, idle_timeout: 20`) — already sized for Supabase's pooler (pgbouncer session mode) rather than an arbitrary guess; now explicitly torn down on shutdown instead of left dangling.
+
+**JWT/JWKS.** `verifySupabaseAccessToken` now also validates `issuer` (`${SUPABASE_URL}/auth/v1`) on both the HS256 and ES256/JWKS paths — the signature check alone already scopes acceptance to this project's own keys/secret, but `issuer` is explicit defense in depth and gives a token from a *different* Supabase project a clearer rejection reason than an opaque signature mismatch. `createRemoteJWKSet` already caches/rotates by `kid` (no per-request JWKS network call). Audience, expiration and algorithm were already checked — see `tests/jwt-verification.test.ts` for invalid-signature/expired/wrong-issuer/wrong-audience/malformed/missing-claim coverage.
+
+**Platform Credentials.** Reviewed against Fase 15's own implementation — still correct: `GET` never returns a secret, audit metadata never contains one (tested explicitly), and `WEBHOOK_SECRET_ENCRYPTION_KEY` comes only from the environment, never persisted to the database. No changes needed.
+
+**API Key security.** Reviewed `modules/apiKeys/crypto.ts` — already using `timingSafeEqual` for constant-time secret comparison, SHA-256 over a 256-bit CSPRNG secret (deliberately not a password-style KDF — see the file's own comment for why), and the raw secret is never stored, only its hash. No changes needed.
+
+**Audit query performance.** Three indexes added, matching `listPlatformAuditLogs`'s actual query shape, not indiscriminately: `(created_at desc, id desc)` for the keyset-pagination ORDER BY (used on every call), `action` for the control-plane prefix allowlist plus the exact-action filter, `actor_user_id` for that filter param. `target_type`/`target_id` stay unindexed — always used alongside another condition, never proven as a standalone bottleneck.
+
+**Rate limiting (`middleware/rateLimit.ts`).** A minimal in-memory, per-process limiter — deliberately not Redis-backed; this is a single-instance deployment and a distributed limiter would be complexity with no present payoff (documented limitation: a multi-instance deployment would need a real fix here). Applied to the operations this phase names as priority: `POST /platform/credentials` (10/5min), `POST /platform/credentials/:id/revoke` (20/5min), `POST .../webhooks/:id/test` (10/min), `GET /service/discover` (60/min). Keyed by authenticated identity when known (survives IP changes/shared NATs), falling back to IP. Deliberately **not** applied to health endpoints — rate-limiting legitimate load-balancer/orchestrator polling risks a false "unhealthy" cascade.
+
+**Migration strategy.** Unchanged and already correct: versioned migrations via `drizzle-kit generate`/`migrate` (10 migrations so far, `drizzle/migrations/`), never `db:push` as the production mechanism (that script remains a local-iteration convenience only). Staging and production should each run `npm run db:migrate` explicitly and auditably — never automatically on deploy without a human trigger.
+
+**Seed strategy.** Unchanged and already correct: `npm run db:seed` seeds only platform-defined catalogs (roles, permissions, applications, plans, scopes, meters — all idempotent `onConflictDoUpdate`), never a tenant or an administrator. `npm run platform:bootstrap-admin` remains a separate, explicit, one-time operator action — never automatic on startup.
+
+**CI (`.github/workflows/ci.yml`).** New. `install → lint → typecheck → migrate → seed → test → smoke → build` against an ephemeral `postgres:16` service container. No deployment step. The `SUPABASE_*`/`DATABASE_URL` values in the workflow are fixed, non-secret fixtures scoped to that disposable container — never a real Supabase project, never something staging or production credentials could be confused with.
+
+**Staging.** Not provisioned. What staging needs, concretely, when it's created: a dedicated Supabase project (own Auth users, own JWT signing keys — never shared with production or development), a dedicated PostgreSQL database, `APP_ENV=staging`/`NODE_ENV=production`, `PLATFORM_ALLOWED_ORIGINS` set to the staging Console's real origin, `npm run db:migrate` run explicitly against it, and its own `platform:bootstrap-admin` run once. No URL is assumed or invented here.
+
+**Production checklist** (nothing below has been executed): dedicated Supabase project + PostgreSQL database (never staging's or development's), `APP_ENV=production`/`NODE_ENV=production`, every required secret set (`DATABASE_URL`, `SUPABASE_*`, `WEBHOOK_SECRET_ENCRYPTION_KEY`) and none committed, `PLATFORM_ALLOWED_ORIGINS` set to the real Console production origin only, `npm run db:migrate` run explicitly and auditably, `platform:bootstrap-admin` run once for the first real administrator, `/v1/health` and `/v1/health/ready` reachable by whatever orchestrator/load balancer is chosen, logs routed somewhere durable.
+
+**Deliberately not implemented this phase:** automatic production deployment, Docker/Kubernetes orchestration, Redis, Kafka, a distributed rate limiter, a full observability stack (Grafana/Prometheus/Loki/Jaeger/OpenTelemetry), DNS/domain automation. See CLAUDE.md's Fase 16 brief §48 for the complete list — the foundation laid here (structured logs, request IDs, health/readiness) is meant to make adding those tools later additive, not a rewrite.

@@ -64,6 +64,13 @@
       "when": 1789696980398,
       "tag": "0008_square_leopardon",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789854094403,
+      "tag": "0009_talented_enchantress",
+      "breakpoints": true
     }
   ]
 }

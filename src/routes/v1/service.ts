@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { authenticate } from "../../middleware/authenticate.js";
+import { rateLimit } from "../../middleware/rateLimit.js";
 import { discoverQuerySchema } from "../../modules/discovery/schemas.js";
 import { discoverService } from "../../modules/discovery/service.js";
 import { asyncHandler } from "../../shared/asyncHandler.js";
@@ -39,6 +40,7 @@ serviceRouter.get(
 serviceRouter.get(
   "/service/discover",
   authenticate,
+  rateLimit({ keyPrefix: "service.discover", windowMs: 60_000, max: 60 }),
   asyncHandler(async (req, res) => {
     if (!req.service) throw new ForbiddenError("This endpoint requires a service credential");
 

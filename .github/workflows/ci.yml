@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# Fase 16 §38: install -> lint -> typecheck -> test -> build. No deployment
+# step — this workflow validates, it never ships. Tests are real
+# integration tests against a real Postgres (this codebase has no mocked
+# DB layer, on purpose — see CLAUDE.md), so CI runs one as an ephemeral
+# service container, migrates and seeds it, then runs the exact same
+# `npm test`/`npm run smoke` a developer runs locally. All credential-shaped
+# values below are fixed, non-secret fixtures scoped to this disposable
+# container — never a real Supabase project, never something staging or
+# production could be confused with (see README "CI").
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ul_platform_ci
+          POSTGRES_PASSWORD: ul_platform_ci
+          POSTGRES_DB: ul_platform_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ul_platform_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      NODE_ENV: test
+      APP_ENV: development
+      PORT: 4000
+      DATABASE_URL: postgres://ul_platform_ci:ul_platform_ci@localhost:5432/ul_platform_ci
+      # A CI-only fixture, self-consistent with SUPABASE_JWT_SECRET below —
+      # tests mint their own HS256 tokens against this secret and never make
+      # a real network call to this host (the ES256/JWKS path is never
+      # exercised by a locally-minted token). Not a real Supabase project.
+      SUPABASE_URL: https://ci-fixture-project.supabase.co
+      SUPABASE_ANON_KEY: ci-fixture-anon-key
+      SUPABASE_SERVICE_ROLE_KEY: ci-fixture-service-role-key
+      SUPABASE_JWT_SECRET: ci-fixture-jwt-secret-not-used-outside-this-workflow
+      WEBHOOK_SECRET_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      PLATFORM_ALLOWED_ORIGINS: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run migrations
+        run: npm run db:migrate
+
+      - name: Seed
+        run: npm run db:seed
+
+      - name: Test
+        run: npm test
+
+      - name: Smoke
+        run: npm run smoke
+
+      - name: Build
+        run: npm run build

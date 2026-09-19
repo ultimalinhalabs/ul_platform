@@ -16,6 +16,16 @@ const hs256Secret = new TextEncoder().encode(env.SUPABASE_JWT_SECRET);
  */
 const jwks = createRemoteJWKSet(new URL("/auth/v1/.well-known/jwks.json", env.SUPABASE_URL));
 
+/**
+ * Fase 16 §29: the signature check alone already scopes acceptance to
+ * tokens this project's own JWKS/shared-secret can verify, but `issuer` is
+ * checked explicitly too — defense in depth against a JWKS/secret ever
+ * being reused across projects, and it's what a token from a *different*
+ * Supabase project (signed by keys we'd never resolve) would fail on
+ * first, with a clearer rejection than a signature mismatch.
+ */
+export const EXPECTED_ISSUER = new URL("/auth/v1", env.SUPABASE_URL).toString();
+
 const supabaseClaimsSchema = z.object({
   sub: z.string().uuid(),
   email: z.string().email().optional(),
@@ -39,8 +49,8 @@ export async function verifySupabaseAccessToken(token: string): Promise<Supabase
     const { alg } = decodeProtectedHeader(token);
     const { payload } =
       alg === "HS256"
-        ? await jwtVerify(token, hs256Secret, { algorithms: ["HS256"] })
-        : await jwtVerify(token, jwks);
+        ? await jwtVerify(token, hs256Secret, { algorithms: ["HS256"], issuer: EXPECTED_ISSUER })
+        : await jwtVerify(token, jwks, { issuer: EXPECTED_ISSUER });
     const claims = supabaseClaimsSchema.parse(payload);
 
     const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];

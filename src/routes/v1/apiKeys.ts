@@ -3,6 +3,7 @@ import { authenticate } from "../../middleware/authenticate.js";
 import { requireOrganizationMembership } from "../../middleware/organizationContext.js";
 import { requirePermission } from "../../middleware/requirePermission.js";
 import { requirePlatformMembership } from "../../middleware/platformContext.js";
+import { rateLimit } from "../../middleware/rateLimit.js";
 import { requirePlatformPermission } from "../../middleware/requirePlatformPermission.js";
 import { createApiKeySchema } from "../../modules/apiKeys/schemas.js";
 import {
@@ -98,6 +99,7 @@ apiKeysRouter.post(
 apiKeysRouter.post(
   "/platform/credentials",
   authenticate,
+  rateLimit({ keyPrefix: "platform.credential.manage", windowMs: 5 * 60_000, max: 10 }),
   requirePlatformMembership(),
   requirePlatformPermission("platform.credential.manage"),
   asyncHandler(async (req, res) => {
@@ -126,6 +128,7 @@ apiKeysRouter.get(
 apiKeysRouter.post(
   "/platform/credentials/:keyId/revoke",
   authenticate,
+  rateLimit({ keyPrefix: "platform.credential.manage", windowMs: 5 * 60_000, max: 20 }),
   requirePlatformMembership(),
   requirePlatformPermission("platform.credential.manage"),
   asyncHandler(async (req, res) => {

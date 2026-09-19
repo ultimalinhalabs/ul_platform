@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { authenticate } from "../../middleware/authenticate.js";
 import { requireOrganizationMembership } from "../../middleware/organizationContext.js";
+import { rateLimit } from "../../middleware/rateLimit.js";
 import { requirePermission } from "../../middleware/requirePermission.js";
 import { createWebhookEndpointSchema } from "../../modules/webhooks/schemas.js";
 import {
@@ -85,6 +86,7 @@ webhooksRouter.post(
 webhooksRouter.post(
   "/organizations/:organizationId/webhooks/:webhookId/test",
   authenticate,
+  rateLimit({ keyPrefix: "webhook.test", windowMs: 60_000, max: 10 }),
   requireOrganizationMembership(),
   requirePermission("webhook.manage"),
   asyncHandler(async (req, res) => {
