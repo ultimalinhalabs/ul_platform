@@ -50,6 +50,8 @@ declare global {
       membership?: OrganizationMembershipContext;
       service?: ServiceAuthContext;
       platformAdmin?: PlatformAdminContext;
+      /** Set by middleware/requestId.ts before any other middleware runs — see that file for the trust boundary on a client-supplied value. */
+      requestId: string;
     }
   }
 }
