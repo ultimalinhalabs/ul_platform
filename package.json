@@ -23,7 +23,9 @@
     "platform:bootstrap-admin": "tsx scripts/bootstrap-platform-admin.ts",
     "dev:create-organization": "tsx scripts/create-organization-for-user.ts",
     "f19:provision": "tsx scripts/f19-provision-fixtures.ts",
-    "f19:teardown": "tsx scripts/f19-teardown-fixtures.ts"
+    "f19:teardown": "tsx scripts/f19-teardown-fixtures.ts",
+    "f20:provision": "tsx scripts/f20-provision-fixtures.ts",
+    "f20:teardown": "tsx scripts/f20-teardown-fixtures.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
