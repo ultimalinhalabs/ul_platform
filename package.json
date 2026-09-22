@@ -20,7 +20,8 @@
     "db:seed": "tsx src/db/seed/index.ts",
     "db:inspect": "tsx scripts/inspect-schema.ts",
     "smoke": "tsx scripts/smoke.ts",
-    "platform:bootstrap-admin": "tsx scripts/bootstrap-platform-admin.ts"
+    "platform:bootstrap-admin": "tsx scripts/bootstrap-platform-admin.ts",
+    "dev:create-organization": "tsx scripts/create-organization-for-user.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
