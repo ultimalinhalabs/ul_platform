@@ -21,7 +21,9 @@
     "db:inspect": "tsx scripts/inspect-schema.ts",
     "smoke": "tsx scripts/smoke.ts",
     "platform:bootstrap-admin": "tsx scripts/bootstrap-platform-admin.ts",
-    "dev:create-organization": "tsx scripts/create-organization-for-user.ts"
+    "dev:create-organization": "tsx scripts/create-organization-for-user.ts",
+    "f19:provision": "tsx scripts/f19-provision-fixtures.ts",
+    "f19:teardown": "tsx scripts/f19-teardown-fixtures.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
