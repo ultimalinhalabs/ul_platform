@@ -33,7 +33,9 @@
     "f23:provision": "tsx scripts/f23-provision-fixtures.ts",
     "f23:teardown": "tsx scripts/f23-teardown-fixtures.ts",
     "f24:provision": "tsx scripts/f24-provision-fixtures.ts",
-    "f24:teardown": "tsx scripts/f24-teardown-fixtures.ts"
+    "f24:teardown": "tsx scripts/f24-teardown-fixtures.ts",
+    "f25:provision": "tsx scripts/f25-provision-fixtures.ts",
+    "f25:teardown": "tsx scripts/f25-teardown-fixtures.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
