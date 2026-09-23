@@ -29,7 +29,9 @@
     "f21:provision": "tsx scripts/f21-provision-fixtures.ts",
     "f21:teardown": "tsx scripts/f21-teardown-fixtures.ts",
     "f22:provision": "tsx scripts/f22-provision-fixtures.ts",
-    "f22:teardown": "tsx scripts/f22-teardown-fixtures.ts"
+    "f22:teardown": "tsx scripts/f22-teardown-fixtures.ts",
+    "f23:provision": "tsx scripts/f23-provision-fixtures.ts",
+    "f23:teardown": "tsx scripts/f23-teardown-fixtures.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
