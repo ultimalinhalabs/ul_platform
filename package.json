@@ -39,7 +39,9 @@
     "f26:provision": "tsx scripts/f26-provision-fixtures.ts",
     "f26:teardown": "tsx scripts/f26-teardown-fixtures.ts",
     "f27:provision": "tsx scripts/f27-provision-fixtures.ts",
-    "f27:teardown": "tsx scripts/f27-teardown-fixtures.ts"
+    "f27:teardown": "tsx scripts/f27-teardown-fixtures.ts",
+    "mv:provision": "tsx scripts/manual-validation-provision.ts",
+    "mv:teardown": "tsx scripts/manual-validation-teardown.ts"
   },
   "dependencies": {
     "cors": "^2.8.6",
