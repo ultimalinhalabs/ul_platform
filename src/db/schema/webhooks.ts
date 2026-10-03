@@ -1,4 +1,4 @@
-import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { timestamps } from "./_helpers.js";
 import { applications } from "./applications.js";
 import { organizations } from "./organizations.js";
@@ -71,17 +71,52 @@ export const webhookEventSubscriptions = pgTable(
 );
 
 /**
- * Observability record for one delivery attempt — never the event payload
- * itself, never any secret. `attempt` starts at 1; v1 makes exactly one
- * attempt per event/endpoint (no retry worker — see README "Retries"), so
- * this column exists purely so a future retry mechanism can increment it
- * without a schema change, not because anything writes 2 today.
+ * Fase 5 — one published event, persisted so that delivery can be retried
+ * after a restart/deploy (the envelope must exist somewhere other than the
+ * publishing request's memory). `id` is the public `evt_<uuid>` sent as
+ * `X-UL-Event-Id` on EVERY attempt to EVERY endpoint — stable identity is
+ * what lets receivers deduplicate.
  *
- * No uniqueness constraint on (endpointId, eventId): v1's single-attempt
- * delivery means at most one row naturally exists per pair today, but a
- * future retry mechanism would need to insert additional attempt rows for
- * the same pair — a unique constraint here would have to be dropped again
- * later, so it's deliberately not added now (see README "Idempotency").
+ * `idempotencyKey` (optional, chosen by the publisher — e.g. its own fact
+ * id): the same (organization, source application, key) always resolves to
+ * the SAME event, so a publisher retrying its own call never creates a
+ * second event. Same real-constraint pattern as `usage_events`.
+ * `payload` is the product's `data` — UL Platform never interprets it.
+ */
+export const webhookEvents = pgTable(
+  "webhook_events",
+  {
+    id: text("id").primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    sourceApplicationKey: text("source_application_key").notNull(),
+    eventType: text("event_type").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    idempotencyKey: text("idempotency_key"),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("webhook_events_idempotency_unique").on(table.organizationId, table.sourceApplicationKey, table.idempotencyKey),
+    index("webhook_events_organization_id_idx").on(table.organizationId),
+  ],
+);
+
+/**
+ * Fase 5 — ONE row per (endpoint, event): the delivery, not an attempt. Every
+ * retry updates this same row (`attempt` = attempts made so far), so the
+ * delivery id is stable and `(webhook_endpoint_id, event_id)` is unique.
+ *
+ * States: PENDING (waiting for its next attempt at `next_attempt_at`) →
+ * SUCCESS (2xx) | FAILED (permanent: non-retryable response, revoked
+ * endpoint) | EXHAUSTED (retryable failures until the attempt limit).
+ * Rows written before Fase 5 are SUCCESS/FAILED with `attempt = 1`.
+ *
+ * Concurrency: a worker claims a due row with `FOR UPDATE SKIP LOCKED` and a
+ * lease (`locked_until`/`locked_by`); a crashed worker's lease simply expires
+ * and another worker picks the row up — at-least-once, never in memory.
+ * Never stores the payload (that's `webhook_events`) nor any secret.
  */
 export const webhookDeliveries = pgTable(
   "webhook_deliveries",
@@ -92,14 +127,22 @@ export const webhookDeliveries = pgTable(
       .references(() => webhookEndpoints.id, { onDelete: "cascade" }),
     eventId: text("event_id").notNull(),
     eventType: text("event_type").notNull(),
-    status: text("status", { enum: ["SUCCESS", "FAILED"] }).notNull(),
+    status: text("status", { enum: ["PENDING", "SUCCESS", "FAILED", "EXHAUSTED"] }).notNull(),
     attempt: integer("attempt").notNull().default(1),
     responseStatus: integer("response_status"),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
+    lockedBy: text("locked_by"),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    latencyMs: integer("latency_ms"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     index("webhook_deliveries_endpoint_id_idx").on(table.webhookEndpointId),
     index("webhook_deliveries_event_id_idx").on(table.eventId),
+    uniqueIndex("webhook_deliveries_endpoint_event_unique").on(table.webhookEndpointId, table.eventId),
+    index("webhook_deliveries_due_idx").on(table.status, table.nextAttemptAt),
   ],
 );

@@ -7,6 +7,7 @@ import { errorHandler } from "./middleware/errorHandler.js";
 import { requestId } from "./middleware/requestId.js";
 import { requestTiming } from "./middleware/requestTiming.js";
 import { v1Router } from "./routes/v1/index.js";
+import { startWebhookRetryWorker } from "./modules/webhooks/delivery.js";
 import { logger } from "./shared/logger.js";
 
 const app = express();
@@ -44,6 +45,13 @@ const server = app.listen(env.PORT, () => {
 });
 
 /**
+ * Fase 5 — webhook retry worker. All retry state lives in PostgreSQL
+ * (`webhook_deliveries`), so restarts/deploys/multiple instances are safe
+ * (claims use FOR UPDATE SKIP LOCKED + a lease). Stopped on shutdown.
+ */
+const stopWebhookRetryWorker = startWebhookRetryWorker();
+
+/**
  * Graceful shutdown (Fase 16 §23): stop accepting new connections, let
  * in-flight requests finish, close the DB pool, then exit — with a hard
  * ceiling so a stuck connection can never hang the process indefinitely.
@@ -55,6 +63,7 @@ function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   logger.info("Shutdown signal received", { event: "server.shutdown.start", signal });
+  stopWebhookRetryWorker();
 
   const forceExitTimer = setTimeout(() => {
     logger.error("Graceful shutdown timed out — forcing exit", { event: "server.shutdown.timeout" });

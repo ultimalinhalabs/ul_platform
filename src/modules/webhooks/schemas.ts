@@ -16,4 +16,11 @@ export const createWebhookEndpointSchema = z.object({
 export const publishEventSchema = z.object({
   type: eventTypeSchema,
   data: z.record(z.string(), z.unknown()).default({}),
+  /**
+   * Fase 5 — optional publisher-chosen key (e.g. the product's own fact id).
+   * The same key for the same (organization, source application) always
+   * resolves to the SAME event: a publisher retrying its own call never
+   * creates a second event nor a second delivery.
+   */
+  idempotencyKey: z.string().trim().min(1).max(200).optional(),
 });

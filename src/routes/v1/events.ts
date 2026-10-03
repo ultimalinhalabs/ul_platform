@@ -29,6 +29,7 @@ eventsRouter.post(
       sourceApplicationKey: req.service!.applicationKey,
       type: body.type,
       data: body.data,
+      idempotencyKey: body.idempotencyKey,
     });
     ok(res, result, 202);
   }),
