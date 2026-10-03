@@ -78,6 +78,13 @@
       "when": 1791049531901,
       "tag": "0010_webhook_retry_and_dedupe",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791049705201,
+      "tag": "0011_revoke_public_data_api_grants",
+      "breakpoints": true
     }
   ]
 }
