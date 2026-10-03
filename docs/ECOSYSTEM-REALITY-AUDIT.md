@@ -263,3 +263,15 @@ Gaps reais para este fluxo: UL Client não tem signup nem criação de organiza�
 7. Retry na entrega de webhooks do UL antes de notificações críticas.
 8. UL Platform: 11 migrações registadas vs 10 ficheiros — reconciliar.
 9. UL Platform: `anon`/`authenticated` mantêm GRANTs em `public` (protegidos por RLS sem policies) — endurecer com REVOKE quando conveniente.
+
+---
+
+## Actualização — Fase 5 (2026-10-03)
+
+Factos novos (detalhe em `docs/PHASE-5-FOUNDATION-HARDENING.md`):
+
+- **Pasta-mãe:** `projeto_ul/.git` removido (estava vazio: 0 commits). `projeto_ul` já não é um repositório; os 8 filhos continuam independentes.
+- **Divergência 11 vs 10 migrations na BD UL — causa:** a linha extra é `na-pista/drizzle/migrations/0000_organic_power_man.sql`, aplicada na BD do UL na fase spike (origem também do schema residual `na_pista`). Não bloqueia migrations do UL; limpeza por autorizar.
+- **Webhooks UL:** passam a ter retry persistente, dedupe por evento/delivery, timeout, sem redirects; migration `0010` aplicada em produção (agora 12 linhas registadas).
+- **Data API UL:** GRANTs de `anon`/`authenticated` ainda presentes (RLS bloqueia); revogação pronta na branch `phase-5/revoke-public-data-api-grants`, não aplicada.
+- **QD:** tabelas de ligação ao ecossistema (`0027`) prontas na branch `phase-5/ecosystem-foundation`, não aplicadas.
