@@ -176,11 +176,11 @@ Inalterado e reforçado: o mesmo transporte de eventos (UL webhooks com retry/de
 |---|---|---|---|---|---|
 | `ul-client` | `ultimalinhalabs/ul_client` | sim (`origin`) | **vazio** (0 refs) | **não** (regra: só remote) | `master` · 14 commits · 81 alterações do dono intactas (57 M, 24 ??) |
 | `na-pista` | `ultimalinhalabs/na_pista` | sim | **vazio** | **não** (regra: só remote) | `f31-reference-product-ui` (+ `main`, `f29a-…`, `f30-…`) · 60 commits · 14 alterações do dono intactas (1 M, 13 ??) |
-| `na-pista-console` | `ultimalinhalabs/na_pista_console` | sim | **vazio** | **bloqueado — 403** | limpo; commit local `aacd265` em `main` (`.gitignore`) por publicar |
-| `na-pista-landing` | `ultimalinhalabs/na_pista_landing` | sim | **vazio** | **bloqueado — 403** | limpo; commit local `a0a238c` em `main` (`.gitignore`) por publicar |
+| `na-pista-console` | `ultimalinhalabs/na_pista_console` | sim | **vazio** | **sim** — `main` (`aacd265`), upstream `origin/main` | limpo; `f31-reference-product-ui` **não** publicada (decisão do dono) |
+| `na-pista-landing` | `ultimalinhalabs/na_pista_landing` | sim | **vazio** | **sim** — `main` (`a0a238c`), upstream `origin/main` | limpo |
 
 - Existência e vazio verificados com `git ls-remote` (só leitura), com controlos: um repo inexistente dá `Repository not found`; `ul_platform` devolve refs.
-- **Bloqueio de publicação:** `git push -u origin main` → `Permission to ultimalinhalabs/na_pista_console.git denied to airtonalexandrelda-cloud` (idem landing). A credencial Git desta máquina é a conta `airtonalexandrelda-cloud`, que tem escrita em `ul_platform` mas **não** nestes repositórios novos. Não foi tentada outra credencial nem alterada configuração do GitHub; `gh` continua sem autenticação.
+- **Publicação:** a 1.ª tentativa falhou com 403 (credencial Git da máquina = conta `airtonalexandrelda-cloud`, sem escrita nestes repositórios). Depois de o dono autenticar o `gh` com a conta `ultimalinhalabs`, o push foi feito com essa credencial **só no comando** (`-c credential.helper=!gh auth git-credential`, sem alterar a configuração global), após nova confirmação de remote vazio: `main` publicado nos dois repositórios limpos, sem force. O credential manager do Windows mantém a conta antiga (usada por `ul_platform`/`qualeadica`).
 - Nenhum remote criado, renomeado ou com visibilidade alterada; nenhum force push; nenhum conteúdo remoto apagado.
 
 **Auditoria pré-publicação (4 repos, histórico completo, só caminhos/padrões — nenhum valor impresso):**
@@ -286,11 +286,11 @@ Cluster Postgres 17 descartável (`initdb` no scratchpad, `localhost:55432`), ro
 | Runtime UL auditado · risco do retry worker documentado | ✅ |
 | Testes / typecheck / build | ✅ (com as intermitências conhecidas) |
 | Lint | ⚠️ `npm run lint` do UL falha por 20 erros pré-existentes em `scripts/` |
-| Publicação de `na-pista-console` e `na-pista-landing` | ❌ **bloqueado (403)** — falta acesso de escrita da conta Git desta máquina |
+| Publicação de `na-pista-console` e `na-pista-landing` | ✅ `main` publicado (após autenticação `gh` como `ultimalinhalabs`) |
 
 ### 5.1.10 Riscos restantes / decisões do dono
 
-1. Dar escrita à conta Git desta máquina nos 4 repositórios (ou autenticar outra) — depois `git push -u origin main` em `na-pista-console` e `na-pista-landing` (commits prontos).
+1. ~~Acesso de escrita aos repositórios~~ — resolvido (`gh` como `ultimalinhalabs`); `na-pista-console` e `na-pista-landing` publicados.
 2. `ul-client` e `na-pista`: decidir o que commitar e quando; aplicar antes o bloco de `.gitignore`. Continuam **sem backup remoto**.
 3. `na-pista-console`: publicar também `f31-reference-product-ui` (a branch de trabalho, 2 commits à frente de `main`)?
 4. UL Platform sem runtime de produção (API e retries só existem quando alguém corre localmente contra a BD de produção).
