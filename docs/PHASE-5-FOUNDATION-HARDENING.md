@@ -163,3 +163,137 @@ Inalterado e reforçado: o mesmo transporte de eventos (UL webhooks com retry/de
 ## 19. Next phase (recomendado, não implementado)
 
 **Fase 6 — Identity & Organization authority:** UL Client com signup/criação de organização/convites; QD aceita a autoridade UL (estratégia C, verifier UL explícito), liga organizações e perfis via as tabelas desta fase; QD passa a consumir entitlements UL (`interpretQdEntitlements`) em modo sombra antes de os aplicar.
+
+---
+
+## Phase 5.1 — Foundation Closure
+
+> 2026-10-04 · fecho dos pontos críticos da Fase 5. Sem segredos neste documento (só refs de projecto truncadas, contagens e códigos de estado). Não é a Fase 6.
+
+### 5.1.1 Remotes
+
+| Repo | Remote confirmado pelo dono | Configurado | Remote antes | Publicado | Estado |
+|---|---|---|---|---|---|
+| `ul-client` | `ultimalinhalabs/ul_client` | sim (`origin`) | **vazio** (0 refs) | **não** (regra: só remote) | `master` · 14 commits · 81 alterações do dono intactas (57 M, 24 ??) |
+| `na-pista` | `ultimalinhalabs/na_pista` | sim | **vazio** | **não** (regra: só remote) | `f31-reference-product-ui` (+ `main`, `f29a-…`, `f30-…`) · 60 commits · 14 alterações do dono intactas (1 M, 13 ??) |
+| `na-pista-console` | `ultimalinhalabs/na_pista_console` | sim | **vazio** | **bloqueado — 403** | limpo; commit local `aacd265` em `main` (`.gitignore`) por publicar |
+| `na-pista-landing` | `ultimalinhalabs/na_pista_landing` | sim | **vazio** | **bloqueado — 403** | limpo; commit local `a0a238c` em `main` (`.gitignore`) por publicar |
+
+- Existência e vazio verificados com `git ls-remote` (só leitura), com controlos: um repo inexistente dá `Repository not found`; `ul_platform` devolve refs.
+- **Bloqueio de publicação:** `git push -u origin main` → `Permission to ultimalinhalabs/na_pista_console.git denied to airtonalexandrelda-cloud` (idem landing). A credencial Git desta máquina é a conta `airtonalexandrelda-cloud`, que tem escrita em `ul_platform` mas **não** nestes repositórios novos. Não foi tentada outra credencial nem alterada configuração do GitHub; `gh` continua sem autenticação.
+- Nenhum remote criado, renomeado ou com visibilidade alterada; nenhum force push; nenhum conteúdo remoto apagado.
+
+**Auditoria pré-publicação (4 repos, histórico completo, só caminhos/padrões — nenhum valor impresso):**
+
+| Verificação | Resultado |
+|---|---|
+| Caminhos sensíveis alguma vez commitados (`.env*` excepto `.example`, `*.pem/key/p12/pfx`, `id_rsa`, `credentials*.json`, dumps, `*.db/sqlite`, `node_modules`, `.next`, `dist`, `build`) | nenhum ficheiro de segredo/dump/build; só código-fonte cujo nome contém "credential"/"secret" e migrations `.sql` |
+| Conteúdo de todos os blobs do histórico (chave privada, JWT, URL Postgres com password, `ulk_…`, `sk_live`, AWS, Resend, GitHub, Google, `sb_secret`, OpenAI, Anthropic, token Meta) | 1 acerto: `ulk_44444444.supe…` num mock de `integrations.test.tsx` (na-pista-console) — fixture de baixa entropia, não é segredo |
+| `.gitignore` — `na-pista-console` | **falhava**: `.env.production/.development/.test`, dumps, chaves, `credentials.json`, `build/` não ignorados → corrigido em `main` (`aacd265`, via worktree temporário; checkout `f31-…` do dono intocado) |
+| `.gitignore` — `na-pista-landing` | dumps, `id_rsa`, `credentials.json`, `dist/`, `build/` não ignorados → corrigido (`a0a238c`) |
+| `.gitignore` — `ul-client`, `na-pista` | `.env*` ignorados; **dumps, `id_rsa`, `credentials*.json` não ignorados** (e `key.pem`/`.next` no `na-pista`) — **não alterado** (árvores com trabalho do dono). Recomendação: o mesmo bloco antes do primeiro push |
+
+Bloco acrescentado (só `.env.example` continua versionado; `git ls-files -ci --exclude-standard` vazio depois): `.env*`, `!.env.example`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `id_ed25519*`, `credentials*.json`, `service-account*.json`, `*.dump`, `*.sql.gz`, `dump*.sql`, `backup*.sql`, `*.sqlite`, `*.sqlite3`, `*.db`, `/build/`, `/dist/`.
+
+### 5.1.2 Migration `0011_revoke_public_data_api_grants` (UL, `qajlwc…`) — aplicada
+
+| Passo | Evidência |
+|---|---|
+| Branch / ficheiro | `phase-5/revoke-public-data-api-grants` (`2d04cfc`); ficheiro aplicado = blob da branch (sha256 do conteúdo LF `9f8faf6e…`; registado com CRLF, como as 12 anteriores) |
+| `0010` aplicada | linha `#12` `created_at=1791049531901` = `0010_webhook_retry_and_dedupe` (hash confere) |
+| Antes | 12 linhas (inclui `#11`, a órfã do Na Pista — intocada); `anon`/`authenticated` com ALL em **32/32** tabelas `public`; RLS 32/32; 0 policies; 0 triggers em `auth.*`; Data API `GET …?limit=0` → **200** |
+| Dry-run | réplica da regra do migrator do drizzle-orm (aplica `when > max(created_at)`): **só `0011`**; o script de aplicação aborta se o conjunto pendente não for exactamente esse |
+| Segurança operacional | snapshot das ACLs (32 relações + 6 default ACLs) e SQL de rollback exacto guardados fora do repo (scratchpad da sessão); migração transaccional (`migrate` do drizzle-orm) |
+| Aplicação | 12 → **13** linhas; última `created_at=1791049705201` = `0011` |
+| Depois | grants `anon`/`authenticated` em `public`: **0**; default ACLs de `postgres` para tabelas/sequências: sem anon/authenticated; Data API → **401 / 42501** (`organizations`, `api_keys`, `platform_memberships`, `webhook_events`); Auth `/auth/v1/health` 200, `/auth/v1/settings` 200; role da API (`postgres`, BYPASSRLS) mantém leitura/escrita; 13 chaves de serviço activas intactas; `na_pista`, `na_pista_spike`, `na_pista_drizzle_meta` intocados |
+| Git | merge `b6913bc` em `master`, publicado (`250ff87..b6913bc`). A branch remota `phase-5/revoke-public-data-api-grants` não foi apagada |
+
+Achado residual (não corrigido — fora do âmbito autorizado): os default ACLs do owner `supabase_admin` (tabelas/sequências/funções) e os de `postgres` para **funções** ainda concedem a `anon`/`authenticated`; existe `public.rls_auto_enable` (SECURITY DEFINER, EXECUTE para `anon`). As tabelas das migrations são criadas como `postgres`, por isso não herdam GRANTs. Avaliar numa migration própria.
+
+Nota de processo: a comparação ficheiro↔blob antes da aplicação reportou diferença e o comando seguiu em frente (encadeamento mal construído). Verificado imediatamente a seguir: a diferença é só CRLF↔LF (conteúdo idêntico). Na `0027` a comparação passou a abortar o script.
+
+### 5.1.3 Migration `0027_ecosystem_links` (QD, `dijpcg…`) — aplicada
+
+| Passo | Evidência |
+|---|---|
+| Antes | 28 linhas registadas, última = `0026`; dry-run: **só `0027`**; tabelas `ecosystem_*` inexistentes; 42/42 tabelas com RLS, 0 expostas |
+| Aplicação | como `postgres`; ficheiro verificado igual ao blob da branch (o script aborta se diferir); 28 → **29**, última = `0027` |
+| Tabelas | `ecosystem_organization_links`, `ecosystem_identity_links` — RLS ligado, 0 policies, `anon`/`authenticated` sem privilégios, **0 linhas** (nenhum link criado) |
+| Índices / constraints | 2 PK, `uq_ecosystem_org_links_ul_org`, `uq_ecosystem_identity_links_ul_user`, 3 FK (organizations CASCADE, profiles CASCADE, `linked_by` SET NULL) |
+| Data API QD | `ecosystem_*`, `platform_admins`, `organizations` → **401 / 42501**; Auth 200; 44/44 tabelas com RLS, 0 expostas |
+| Invariantes | organizations 56, profiles 460, organization_members 14, organization_subscriptions 34, auth.users 6 — **iguais a antes** (nada migrado, criado ou apagado) |
+| Git | `main` avançado por fast-forward para `0a21e51` só depois da verificação e da suite; alterações do dono (`api/package.json`, `api/scripts/seed/wandipopela-sports.seed.ts`) intactas |
+
+Nota: o Postgres truncou o nome da FK `ecosystem_organization_links_qd_organization_id_organizations_id_fk` (67 > 63 caracteres). Inofensivo em runtime; um futuro `drizzle-kit generate/push` pode reportar diferença de nome.
+
+O `main` do QD pode ter deploy automático (`api/vercel.json`). O código publicado é a fundação da Fase 5: porta de identidade com **uma** autoridade (Supabase do QD), rotas admin de mapping, interpretação de entitlements **não ligada ao runtime**. Nenhum token UL é aceite.
+
+### 5.1.4 Testes pós-produção (nunca contra produção)
+
+Cluster Postgres 17 descartável (`initdb` no scratchpad, `localhost:55432`), roles `anon`/`authenticated`/`service_role` simulados, sem `.env` real no processo.
+
+| Suite | Resultado |
+|---|---|
+| UL `typecheck` / `build` / `smoke` / `db:migrate` (0000–0011 → 0 grants anon) / `db:seed` | OK |
+| UL `npm test` | **222/223** — a falha é o teste intermitente pré-existente `listPlatformAuditLogs paginates…` (§10); isolado passa 3/3 |
+| UL `npm run lint` | **falha: 20 erros `no-explicit-any` pré-existentes** em `scripts/f19–f27-provision-fixtures.ts` e `manual-validation-provision.ts` (versionados desde 2026-09-23, não tocados). `eslint src tests` limpo. Correcção ao §14: o "eslint OK" da Fase 5 não vale para o repositório inteiro — e o CI corre `npm run lint` |
+| QD `tsc --noEmit` | OK |
+| QD suite completa (migrations 0000–0027 + seeds platform-policies/plans/legal, chaves fictícias) | **674/675** na corrida limpa; a falha é `postgres-notify-listener` (ficheiro não tocado) — interferência de NOTIFY entre ficheiros em paralelo; isolado 3/3, e passou na 1.ª corrida completa. `ecosystem-foundation` + `whatsapp-webhook`: 19/19 |
+| Guard UL | recusa host remoto **e** o `.env` real (produção) sob o runner de testes |
+| Guard QD | recusa `TEST_DATABASE_URL` ausente e host remoto |
+
+### 5.1.5 Webhooks (`0010`) — verificação em produção
+
+`webhook_events` 0 · `webhook_deliveries` 2 (`SUCCESS`) · 0 `PENDING` vencidas · 0 leases activos · 8 índices (`webhook_deliveries_due_idx`, `…_endpoint_event_unique`, `webhook_events_idempotency_unique`, …) · RLS ligado nas duas tabelas. Migration não repetida; nenhum evento enviado. Comportamento do worker validado pela suite `webhook-retry` (receptores HTTP locais).
+
+### 5.1.6 Service-to-service — sem activação
+
+0 chaves `QUALE_A_DICA` (19 chaves, todas `NA_PISTA`, 13 activas); endpoints: só os 2 `staging` `.example`; 3 integrações `ACTIVE` (só discovery); allowlist `QUALE_A_DICA` inalterada (`catalog.read`, `event.publish`, `report.generate`, `usage.read`, `usage.write`). Nenhuma chave, endpoint ou integração criada. QD → Na Pista e Na Pista → eventos UL continuam desligados.
+
+### 5.1.7 UL Platform — runtime de produção (diagnóstico, nada alterado)
+
+| Pergunta | Resposta (evidência) |
+|---|---|
+| Onde está deployado | **Em lado nenhum.** Sem Dockerfile/`vercel.json`/Railway/Render/Fly/Procfile; CI = lint/typecheck/test/build, sem deploy; README: "No production deployment was performed" |
+| Serviço persistente / worker | **Nenhum.** `pg_stat_activity` na BD `qajlwc…`: só ligações Supabase (PostgREST, Supavisor, pg_cron, exporter, pg_net); nada a escutar na porta 4000 local |
+| URL | os consumidores apontam para `http://localhost:4000` / `http://127.0.0.1:4000` (`na-pista`, `na-pista-console`, `ul-client`, `ul-console`) |
+| Arranque | `npm run build && npm start` (`node dist/server.js`); `server.ts` arranca o retry worker (15 s) no mesmo processo |
+| Migrations | manuais (`drizzle-kit migrate`, ou script dirigido como nesta fase); o CI só migra a BD de CI |
+| Secrets | `.env` local (`DATABASE_URL`, `SUPABASE_*`, `WEBHOOK_SECRET_ENCRYPTION_KEY`, …) |
+| Health | `GET /health` (liveness) e `GET /health/ready` (verifica a BD) |
+| Ambiente | `APP_ENV=development` nos `.env` locais; `staging`/`production` exigem `PLATFORM_ALLOWED_ORIGINS` explícito |
+| Última actividade da API na BD | `audit_logs` / `usage_events`: 2026-10-02 (corridas locais) |
+
+**Risco:** o UL Platform só corre na máquina do programador, ligado à BD de produção. Sem esse processo não há API para o Na Pista/consolas e **não há retries** — as deliveries `PENDING` esperam na BD e são processadas por quem arrancar o servidor (incluindo um portátil de desenvolvimento, que passa a entregar webhooks de produção). Impacto actual nulo (0 pendentes, 0 endpoints activos). **Recomendação:** antes de activar qualquer evento real, um deploy persistente único (`APP_ENV=production`, segredos no host, `/health/ready` como health check, migrations como passo explícito e autorizado) e uma BD separada para desenvolvimento local. Não foi criada infraestrutura.
+
+### 5.1.8 Organization mapping / identidade / comercial / dados
+
+- `ecosystem_organization_links` existe em produção, vazia; nenhum link criado nem inferido (email/nome).
+- Identidade não migrada; QD continua `QdSupabaseIdentityVerifier → Principal`; Auth do QD intacto.
+- Comercial: planos, subscrições, preços, seed, billing e checkout **não alterados**; A/B/C por decidir.
+- Dados: nada apagado (`na_pista*`, linha órfã `#11`, perfis/organizações órfãos, fixtures, subscrições, utilizadores).
+
+### 5.1.9 Definition of Done
+
+| Item | Estado |
+|---|---|
+| 4 remotes configurados · nenhum criado arbitrariamente · nenhum force push | ✅ |
+| Nenhum segredo publicado · alterações locais do dono preservadas | ✅ |
+| `0011` aplicada e verificada · Data API UL endurecida · UL `master` actualizado | ✅ |
+| `0027` aplicada e verificada · Data API QD preservada · QD `main` actualizado após validação | ✅ |
+| Webhook `0010` preservado · organization mapping disponível · nenhum link automático | ✅ |
+| Identidade não migrada · comercial não alterado · dados não apagados | ✅ |
+| Runtime UL auditado · risco do retry worker documentado | ✅ |
+| Testes / typecheck / build | ✅ (com as intermitências conhecidas) |
+| Lint | ⚠️ `npm run lint` do UL falha por 20 erros pré-existentes em `scripts/` |
+| Publicação de `na-pista-console` e `na-pista-landing` | ❌ **bloqueado (403)** — falta acesso de escrita da conta Git desta máquina |
+
+### 5.1.10 Riscos restantes / decisões do dono
+
+1. Dar escrita à conta Git desta máquina nos 4 repositórios (ou autenticar outra) — depois `git push -u origin main` em `na-pista-console` e `na-pista-landing` (commits prontos).
+2. `ul-client` e `na-pista`: decidir o que commitar e quando; aplicar antes o bloco de `.gitignore`. Continuam **sem backup remoto**.
+3. `na-pista-console`: publicar também `f31-reference-product-ui` (a branch de trabalho, 2 commits à frente de `main`)?
+4. UL Platform sem runtime de produção (API e retries só existem quando alguém corre localmente contra a BD de produção).
+5. Default ACLs residuais (`supabase_admin`, funções) e `public.rls_auto_enable` executável por `anon`.
+6. Lint do UL vermelho (`scripts/`) — o CI falha no passo de lint.
+7. Mantêm-se os riscos 4–6 do §17 (chaves sem ambiente, resíduo `na_pista*` + linha órfã, teste intermitente).
