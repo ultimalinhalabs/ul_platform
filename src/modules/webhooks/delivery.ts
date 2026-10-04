@@ -280,23 +280,31 @@ export async function processDueWebhookDeliveries(opts: { limit?: number; worker
 }
 
 /**
- * In-process poller started by `server.ts` (never by tests). Unref'd so it
- * never keeps the process alive; overlapping ticks are skipped.
+ * Poller run by the dedicated worker process (`worker.ts`; never by tests or
+ * by the HTTP app). Fase 5.2: the timer is what keeps that process alive, so
+ * it is not unref'd. Overlapping ticks are skipped; `stop()` resolves once an
+ * in-flight tick has finished (an interrupted tick is still safe — its lease
+ * simply expires and another worker picks the rows up).
  */
-export function startWebhookRetryWorker(intervalMs = 15_000): () => void {
+export function startWebhookRetryWorker(intervalMs = 15_000): { workerId: string; stop: () => Promise<void> } {
   const workerId = `webhook-worker-${randomUUID()}`;
-  let running = false;
+  let inFlight: Promise<void> | null = null;
   const timer = setInterval(() => {
-    if (running) return;
-    running = true;
-    processDueWebhookDeliveries({ workerId })
-      .catch((err) => logger.error("webhook retry tick failed", { module: "webhooks", event: "webhook.worker.error", errorCode: err instanceof Error ? err.name : "unknown" }))
+    if (inFlight) return;
+    inFlight = processDueWebhookDeliveries({ workerId })
+      .then(() => undefined)
+      .catch((err) => logger.error("webhook retry tick failed", { module: "webhooks", event: "webhook.worker.error", workerId, errorCode: err instanceof Error ? err.name : "unknown" }))
       .finally(() => {
-        running = false;
+        inFlight = null;
       });
   }, intervalMs);
-  timer.unref();
-  return () => clearInterval(timer);
+  return {
+    workerId,
+    stop: async () => {
+      clearInterval(timer);
+      await inFlight;
+    },
+  };
 }
 
 /**

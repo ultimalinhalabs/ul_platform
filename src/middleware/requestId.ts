@@ -6,7 +6,7 @@ const VALID_REQUEST_ID = /^[A-Za-z0-9._-]{1,128}$/;
 
 /**
  * Establishes `req.requestId` before any other middleware runs (mounted
- * first in server.ts) — every log line and the `X-Request-ID` response
+ * first in app.ts) — every log line and the `X-Request-ID` response
  * header downstream depend on it already being set.
  *
  * Fase 16 §14: a client-supplied `X-Request-ID` is honored only if it

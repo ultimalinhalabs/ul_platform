@@ -1,0 +1,7 @@
+# Never upload local secrets or build artefacts with `vercel deploy` (Git deployments never see them anyway).
+.env
+.env.*
+*.pem
+*.key
+node_modules
+dist
