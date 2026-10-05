@@ -2,7 +2,7 @@
 
 > 2026-10-05 · sequência da Fase 5.1 (`docs/PHASE-5-FOUNDATION-HARDENING.md`).
 > Sem segredos neste documento: só nomes de variáveis, refs de projecto truncadas, portas e códigos de estado.
-> **Estado: NÃO está em produção.** O código e a configuração estão prontos; o deploy na Vercel e na Railway, o domínio e o DNS dependem de acesso às contas (§16).
+> **Estado (actualizado 2026-10-05, §18):** API em produção em `https://api.ultimalinha.ao` (Vercel) e worker a correr na Railway, ambos validados com evidência real. **Production ready: NO** — blockers em §18.9. As secções 1–17 descrevem a preparação (antes do deploy); a §18 é a execução.
 
 ## 1. Estado inicial
 
@@ -213,4 +213,119 @@ O worker **não está em produção**. Código, entrypoint, config Railway e e2e
 | Migrations não aplicadas indevidamente | ✅ (nenhuma aplicada nesta fase) |
 | Smoke tests | ✅ local 125/125 |
 
-**Production ready: NÃO.**
+**Production ready: NÃO** (estado antes do deploy — ver §18.9 para o estado actual).
+
+---
+
+## 18. Execução do deployment (2026-10-05)
+
+Contas autenticadas pelo dono nesta máquina (CLIs `vercel` 62.2.0 e `railway` 5.63.1). Nenhum valor secreto neste documento; todas as variáveis foram passadas por stdin a partir de `%USERPROFILE%\.ul-secrets\ul-platform\production.env`.
+
+### 18.1 Contas e projectos
+
+| | Vercel | Railway |
+|---|---|---|
+| Conta / equipa | `ultimalinhalabs` · equipa `ultima-linha` · plano **Hobby** | Última Linha Labs · workspace plano **HOBBY em trial** (`isTrialing: true`, crédito 5 USD, cliente `INACTIVE`) |
+| Projecto | **`ul-platform`** (`prj_vDKfmehm…`) criado; `project-gbh3l` (vazio, sem deploys, sem repo) **não tocado**; `ultimalinha-landing` não tocado | **`ul-platform`** (`b49d201c…`), ambiente `production`, serviço **`worker`** (`0f7795d4…`) |
+| Repositório | `ultimalinhalabs/ul_platform` — **a ligação Git falhou** (a Vercel GitHub App não tem acesso ao repo); deploy feito pela CLI | `ultimalinhalabs/ul_platform`, branch `master` (ligado; deploy automático a cada push) |
+| Região | Functions em **`lhr1`** (Londres; alterado de `iad1` — a BD está em `eu-west-2`) | **EU West** (`europe-west4`), 1 réplica |
+
+### 18.2 Vercel
+
+- Variáveis **só em Production** (8): `APP_ENV`, `DATABASE_URL` (Secret, **pooler de transacção 6543**), `SUPABASE_URL`, `SUPABASE_ANON_KEY` (Secret), `SUPABASE_SERVICE_ROLE_KEY` (Secret), `SUPABASE_JWT_SECRET` (Secret), `WEBHOOK_SECRET_ENCRYPTION_KEY` (Secret), `PLATFORM_ALLOWED_ORIGINS`. Preview: 0 variáveis. Development: 0. `NODE_ENV`, `PORT`, `TEST_DATABASE_ALLOW_REMOTE`: não definidas.
+- O `DATABASE_URL` 6543 foi derivado do de sessão (mesmo host Supavisor, mesmas credenciais, porta 6543) e **verificado antes** com uma ligação `READ ONLY`: mesma BD (13 migrations registadas).
+- Deployment de produção `dpl_39nsX7xPuHWfG6hU2cggKku6Ru2q` (commit `c7dec41`), **Ready**, build 23 s, uma Function `api/index` (1.32 MB) em `lhr1`. Aliases: `ul-platform.vercel.app`, `ul-platform-ultima-linha.vercel.app`.
+- Deployment Protection activa nos URLs `*.vercel.app` (`all_except_custom_domains`) — validados com `vercel curl`; o domínio próprio é público.
+- `vercel link` criou `.vercel/` (ignorado) e um `.env.local` com um token OIDC da Vercel de curta duração (ignorado; não lido pela app — o `dotenv` só lê `.env`). Também acrescentou `.env*` ao `.gitignore` depois de `!.env.example`; corrigido para só `.vercel`.
+
+### 18.3 Domínio, DNS e TLS
+
+| Item | Evidência |
+|---|---|
+| Domínio | `api.ultimalinha.ao` associado ao projecto `ul-platform`, `verified: true` |
+| DNS | nameservers de `ultimalinha.ao` = **AngoWeb** (`ns1/ns2.mx.angoweb.net`). Registo indicado pela Vercel (rank 1) e criado pelo operador na AngoWeb, **após confirmação explícita**: `CNAME api → ba567697a95a6679.vercel-dns-017.com` (TTL 3600) |
+| Propagação | resolvido em `ns1`/`ns2` AngoWeb, `1.1.1.1` e `8.8.8.8`; Vercel `misconfigured: false` |
+| TLS | certificado `cert_7jXnpuMe…` emitido pela Vercel: `CN=api.ultimalinha.ao`, Let's Encrypt, válido até 2027-01-03, renovação automática; `curl` verify OK |
+| HTTP | `http://` → **308** para `https://`; `Strict-Transport-Security: max-age=31536000; includeSubDomains` |
+
+### 18.4 Validação da API em produção (`https://api.ultimalinha.ao`; repetida também no `*.vercel.app`)
+
+| Teste | Resultado |
+|---|---|
+| `GET /v1/health` | **200** `{"data":{"status":"ok"}}` |
+| `GET /v1/health/ready` | **200** `{"data":{"status":"ready"}}` — BD de produção acessível via pooler 6543 |
+| Sem credenciais: `/v1/me`, `/v1/organizations/:id`, `/v1/platform/audit-logs`, `/v1/service/me` | **401** em todas |
+| JWT inválido (`/v1/me`) · `ulk_` forjada (`/v1/service/me`) | **401** · **401** |
+| Ficheiros: `/package.json`, `/.env`, `/dist/app.js`, `/api/index.js` | **404** em todos (só o `public/README.md` vazio é estático) |
+| Cabeçalhos | `X-Content-Type-Options: nosniff`, `X-Frame-Options: SAMEORIGIN`, `X-Request-Id`; sem `X-Powered-By` |
+| CORS (preflight) | os 9 origins da allow-list ecoados em `Access-Control-Allow-Origin`; `https://evil.example`, `http://localhost:3000` e `null` → **sem** cabeçalho |
+| **JWT real** (`/v1/me`) | **200** — sessão real do Auth UL para o platform admin `p***93@ultimalinha.dev` (autorizado pelo dono), obtida pela Admin API (magic link gerado e verificado, sem envio de email nem password); token **ES256** (`role: authenticated`, `amr: otp`) → valida o caminho JWKS. Sessão terminada (`logout` 204) depois de cada validação |
+| **Service auth real** (`/v1/service/me`) | **200** — chave temporária de plataforma `NA_PISTA`, scope único `usage.read`, expiração 15 min, criada e revogada com as funções do próprio código (auditadas, actor `p***93`). Resposta: `application: NA_PISTA`, `organizationId: null`, `scopes: ["usage.read"]`. Depois da revogação a mesma chave → **401**. Chaves usadas: `4808e060…` (`*.vercel.app`) e `9a0de15c…` (domínio final), ambas `REVOKED` |
+
+Nota sobre o JWT: o logout termina a sessão (refresh token), mas um access token já emitido continua criptograficamente válido para a UL Platform até expirar (≤ 1 h), porque a verificação é local (assinatura + `exp`). Comportamento esperado de JWTs.
+
+CORS — `https://api.qualeadica.ao` é uma API, não uma página; nenhum teste mostrou uso por browser desse origin. Fica na allow-list (autorizado) como **candidato a remoção futura**. `https://www.qualeadica.ao` foi incluído por autorização explícita do dono.
+
+### 18.5 Worker (Railway)
+
+| Item | Evidência |
+|---|---|
+| Serviço | criado vazio, variáveis definidas com `--skip-deploys`, **só depois** ligado ao repo → o 1.º build já tinha variáveis |
+| Variáveis (8) | `APP_ENV=production`, `DATABASE_URL` (**pooler de sessão 5432**), `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET`, `WEBHOOK_SECRET_ENCRYPTION_KEY` (mesmo valor da API), `PLATFORM_ALLOWED_ORIGINS` (exigida pelo `env.ts` quando `APP_ENV≠development`). `NODE_ENV` e `TEST_DATABASE_ALLOW_REMOTE` **não** definidas |
+| Build | Railpack: `npm ci` (com devDependencies) → `npm run build` (`tsc`) — o `railway.json` foi aplicado |
+| Start | `npm run start:worker` → `node dist/worker.js` |
+| Deploy | `a686f577…` **SUCCESS** (commit `c7dec41`). Dois deploys anteriores falharam **antes do build** por erro meu de configuração: o `scale eu-west=1` acrescentou EU West à região por omissão (`sfo`) e o plano só permite uma região (`configErrors`); corrigido para `eu-west=1, sfo=0` |
+| Restart / réplicas / rede | `ON_FAILURE`, máx. 10 · 1 réplica, só EU West · **sem domínio público**, sem porta, sem health check HTTP |
+| Arranque | log `event="worker.started"`, `environment="production"`, `workerId="webhook-worker-e7d9676b…"`; **0** `worker.startup.db_error` (o `select 1` à BD de produção passou), **0** `webhook.worker.error`, **0** shutdowns, **1** arranque de contentor ao fim de vários minutos (sem reinícios) |
+| Ligação à BD | `pg_stat_activity` passou a mostrar 2 ligações `Supavisor`/`postgres` que não existiam antes do deploy (compatíveis com worker + API; o Supavisor não identifica a origem — evidência indirecta) |
+| API não corre o worker | logs da Vercel (2 h): **0** ocorrências de `worker.started`/`webhook-worker`; o entrypoint `api/index.js` só importa `dist/app.js` |
+| Estado de entregas | 0 `PENDING`, 0 com lease activo, 2 deliveries históricas (`SUCCESS`) |
+
+### 18.6 Retry em produção — **não validado**
+
+O único mecanismo de teste existente, `POST /v1/organizations/:org/webhooks/:id/test` (`testWebhookEndpoint`), faz **uma tentativa directa, sem persistir delivery nem retry** — não exercita o worker. O caminho com retry é `POST /v1/organizations/:org/events` (`publishEvent`), que exigiria em produção: uma organização, um webhook endpoint `ACTIVE` subscrito a um tipo de evento, uma chave `ulk_` org-scoped com `event.publish`, a publicação de um evento e um **receptor público controlado** (500 → 200) acessível a partir da Railway. Nada disso existe, e criar dados de produção ou um receptor externo não estava autorizado — **parado para decisão do dono**. Validação equivalente feita localmente (§11): processo `dist/worker.js` separado, 500 → `PENDING` → retry → `SUCCESS`, mesmo `X-UL-Event-Id`, HMAC válido, lease libertado, segredo fora dos logs.
+
+### 18.7 Segurança — verificação pós-deploy
+
+- Nenhum segredo no Git, nas saídas das CLIs ou neste documento; variáveis sensíveis da Vercel como *Secret*.
+- O PAT do Supabase (`sbp_…`, Management API, toda a conta) que tinha sido colocado no `.env` do repo foi movido para `%USERPROFILE%\.ul-secrets\ul-platform\supabase-pat.env` (ACL só do utilizador) e **não foi usado**. Recomendação: revogá-lo no painel Supabase quando deixar de ser necessário.
+- `0011` intacta, nenhuma permissão Supabase alterada, nenhuma migration aplicada (produção continua com 13 linhas), schema inalterado, `env.ts` inalterado.
+- Credenciais temporárias de validação: 2 chaves `ulk_` (revogadas, 401 confirmado) e 2 sessões Auth (logout).
+
+### 18.8 Problemas encontrados
+
+1. Ligação Git da Vercel falhou (GitHub App sem acesso) — deploy pela CLI; pushes para `master` **não** fazem deploy da API.
+2. Railway: 2 deploys falhados por configuração de região (erro meu, corrigido).
+3. `vercel link` alterou o `.gitignore` de forma a anular `!.env.example` (corrigido).
+4. A Railway marca o `railway.json` (config-as-code) como *deprecated*; continua a funcionar até **2026-12-01** — migrar antes dessa data.
+5. A Railway faz redeploy do worker a cada push para `master` (incluindo commits só de documentação) — inofensivo (estado na BD, lease), mas gasta minutos/crédito.
+
+### 18.9 Checklist final
+
+| Item | Estado | Evidência |
+|---|---|---|
+| Vercel deployment successful | ✅ | `dpl_39nsX7…` Ready |
+| API responde · `/v1/health` responde | ✅ | 200 no domínio final |
+| Production database confirmado | ✅ | `/v1/health/ready` 200 (6543); worker `select 1` OK (5432); mesma BD (13 migrations) |
+| Secrets configurados | ✅ | 8 + 8 variáveis, só Production |
+| CORS validado | ✅ | 9 permitidos ecoados; 3 recusados |
+| Auth validado | ✅ | JWT real 200; inválido 401 |
+| Service auth validado | ✅ | chave real 200; revogada 401; forjada 401 |
+| Webhook endpoint validado | ⚠️ | código e entrega validados localmente; nenhuma entrega real em produção |
+| Worker persistente validado | ✅ | `worker.started`, sem erros nem reinícios |
+| Retry worker validado | ❌ | **não validado em produção** (§18.6) |
+| DNS `api.ultimalinha.ao` | ✅ | CNAME propagado |
+| HTTPS | ✅ | Let's Encrypt, HSTS, 308 |
+| Logs sem secrets | ✅ | eventos de arranque e entregas sem segredos; nenhum segredo impresso |
+| Local não aponta para produção | ✅ | `.env` → `localhost:54329` |
+| Migrations não aplicadas indevidamente | ✅ | 13 linhas, inalterado |
+| Smoke tests | ✅ | local 125/125 + validação de produção acima |
+
+**Production ready: NO**
+
+Blockers:
+1. **Retry em produção não validado** — precisa de autorização para um teste controlado (dados de teste em produção + receptor público); ver §18.6.
+2. **Railway em trial** (crédito 5 USD, cliente inactivo) — quando o crédito acabar o worker pára e deixa de haver retries. Activar um plano pago.
+3. **Vercel sem ligação Git** — deploys da API só pela CLI; ligar `ultimalinhalabs/ul_platform` (Vercel → projecto `ul-platform` → Settings → Git), branch de produção `master`.
+
+Riscos não bloqueantes: Vercel **Hobby** (uso não comercial pelos termos da Vercel — passar a Pro antes de tráfego comercial); `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_JWT_SECRET` presentes onde não são usadas (decisão: manter `env.ts`); rate limiter por instância; `railway.json` deprecated a partir de 2026-12-01; PAT do Supabase guardado localmente (revogar quando possível).
