@@ -281,7 +281,7 @@ CORS — `https://api.qualeadica.ao` é uma API, não uma página; nenhum teste 
 | API não corre o worker | logs da Vercel (2 h): **0** ocorrências de `worker.started`/`webhook-worker`; o entrypoint `api/index.js` só importa `dist/app.js` |
 | Estado de entregas | 0 `PENDING`, 0 com lease activo, 2 deliveries históricas (`SUCCESS`) |
 
-### 18.6 Retry em produção — **não validado**
+### 18.6 Retry em produção — **validado** (tentativa 2, §18.6.2)
 
 O único mecanismo de teste existente, `POST /v1/organizations/:org/webhooks/:id/test` (`testWebhookEndpoint`), faz **uma tentativa directa, sem persistir delivery nem retry** — não exercita o worker. O caminho com retry é `POST /v1/organizations/:org/events` (`publishEvent`), que exigiria em produção: uma organização, um webhook endpoint `ACTIVE` subscrito a um tipo de evento, uma chave `ulk_` org-scoped com `event.publish`, a publicação de um evento e um **receptor público controlado** (500 → 200) acessível a partir da Railway. Nada disso existe, e criar dados de produção ou um receptor externo não estava autorizado — **parado para decisão do dono**. Validação equivalente feita localmente (§11): processo `dist/worker.js` separado, 500 → `PENDING` → retry → `SUCCESS`, mesmo `X-UL-Event-Id`, HMAC válido, lease libertado, segredo fora dos logs.
 
@@ -308,7 +308,45 @@ Plano autorizado: organização sintética `TEST — UL retry check 2026-10-05` 
 | Depois | organização 0, memberships 0, chaves 0, endpoints 0, eventos 0, delivery 0; `audit_logs` da organização **preservados** (2 linhas, `organization_id` NULL) |
 | Processos locais | `cloudflared` e o script parados |
 
-Conclusão desta tentativa: o **worker de retry está activo e a executar retries em produção** (evidência directa nos logs da Railway); o **ciclo completo 500 → retry → 200 com HMAC/`X-UL-Event-Id` verificados no receptor continua por provar em produção**.
+Conclusão desta tentativa: o **worker de retry está activo e a executar retries em produção** (evidência directa nos logs da Railway); o **ciclo completo 500 → retry → 200 com HMAC/`X-UL-Event-Id` verificados no receptor continua por provar em produção** — feito na tentativa 2 (§18.6.2).
+
+#### 18.6.2 Ensaio controlado em produção — tentativa 2 (2026-10-05) — **VALIDADO**
+
+Correcções em relação à tentativa 1: nenhum subprocesso síncrono; **pré-teste do túnel a partir de dentro do contentor do worker da Railway** antes de criar qualquer dado (abortaria sem criar nada); limpeza imediatamente a seguir ao ensaio (antes de ler logs), também em SIGINT/SIGTERM e com prazo interno de 12 min; execução sem `timeout` externo.
+
+Acesso para o pré-teste (autorizado pelo dono): chave SSH **efémera** ed25519 dedicada (`SHA256:2GhMdgcm…`), registada na Railway só durante o ensaio; host key `ssh.railway.com` aceite no primeiro contacto (`SHA256:+S1xg92F…`). A chave pessoal `id_ed25519` (com passphrase) chegou a ser registada e foi removida sem uso.
+
+| Passo | Evidência real |
+|---|---|
+| Pré-teste local / a partir da Railway | `204` / `RAILWAY_PROBE=204` — só então foram criados dados |
+| Organização TEST | `0163e1f9…`, slug `test-ul-retry-check-20261005` (actor `p***93`) |
+| Endpoint TEST | `28535ba3…`, aplicação `NA_PISTA`, só `webhook.test`, URL do túnel |
+| Chave TEST | `1f3d5114…`, org-scoped, scopes `["event.publish"]`, expiração 30 min |
+| Publicação pela API de produção (Vercel) | `POST https://api.ultimalinha.ao/v1/organizations/{org}/events` → **202**, `eventId=evt_9808fab6…`, `deliveries: 1`, `idempotent: false` |
+| **Delivery persistida** | `fa4842cd…` |
+| **Tentativa 1 falhou** | executada pela **Vercel** (inline): receptor respondeu **500**; log Vercel `attempt=1 status=PENDING httpStatus=500` |
+| **Estado PENDING** | após a tentativa 1: `PENDING`, `attempt=1`, próxima em 28 s, sem lease |
+| **Retry pelo worker Railway** | log do worker Railway `attempt=2 status=SUCCESS httpStatus=200` (nenhum worker local a correr; a API não corre worker) |
+| **Tentativa 2 com sucesso** | receptor respondeu **200**; BD: `SUCCESS`, `attempt=2`, `response_status=200`, `delivered_at=2026-10-05T11:57:45Z`, latência 1406 ms |
+| **Mesmo `X-UL-Event-Id`** | as 2 chamadas recebidas: `sameEvent: true`, `sameDelivery: true` (`X-UL-Delivery-Attempt` 1 e 2) |
+| **HMAC válido** | `sigOk: true` nas 2 tentativas (verificado no receptor com o segredo do endpoint, `X-UL-Timestamp` + corpo bruto) |
+| **Lease libertado** | `locked_until = NULL`, `locked_by = NULL` |
+| **Sem segredos nos logs** | 3 valores procurados (segredo do webhook, token `ulk_` completo, parte secreta) → **0** ocorrências nos logs da Railway e **0** nos da Vercel |
+
+Intervalo: tentativa 1 às 11:57:04, tentativa 2 às 11:57:44 (backoff ~30 s ± jitter + tick de 15 s do worker).
+
+Limpeza (executada pelo próprio script, auditada):
+
+| Item | Resultado |
+|---|---|
+| chave `1f3d5114…` | `REVOKED` |
+| endpoint `28535ba3…` | `REVOKED` |
+| organização TEST | apagada (`deleteOrganization`) → cascata |
+| Restante na BD | org 0, memberships 0, chaves 0, endpoints 0, eventos 0, delivery 0; `audit_logs` preservados (os 2 ensaios: 4 linhas) |
+| Verificação independente | 0 organizações `test-ul-retry-check%`; total de organizações **9** (igual ao estado anterior); 0 deliveries `PENDING` |
+| Acessos temporários | chave SSH efémera removida da Railway e apagada do disco; nenhuma chave SSH registada na Railway; entrada `ssh.railway.com` removida do `known_hosts`; `cloudflared` parado (continua instalado em `%LOCALAPPDATA%\Microsoft\WinGet\Packages`) |
+
+Nenhum schema, migration, motor de retry ou organização existente foi alterado.
 
 ### 18.7 Segurança — verificação pós-deploy
 
@@ -336,9 +374,9 @@ Conclusão desta tentativa: o **worker de retry está activo e a executar retrie
 | CORS validado | ✅ | 9 permitidos ecoados; 3 recusados |
 | Auth validado | ✅ | JWT real 200; inválido 401 |
 | Service auth validado | ✅ | chave real 200; revogada 401; forjada 401 |
-| Webhook endpoint validado | ⚠️ | código e entrega validados localmente; nenhuma entrega real em produção |
+| Webhook endpoint validado | ✅ | entrega real em produção a um endpoint TEST (§18.6.2) |
 | Worker persistente validado | ✅ | `worker.started`, sem erros nem reinícios |
-| Retry worker validado | ⚠️ | retries 2–6 executados pela Railway em produção com backoff e lease libertado; ciclo 500 → 200 com HMAC/`X-UL-Event-Id` no receptor **não** concluído (túnel devolveu 530) — §18.6.1 |
+| Retry worker validado | ✅ | ensaio controlado em produção: Vercel tentativa 1 → 500 → `PENDING` → worker Railway tentativa 2 → 200 → `SUCCESS`; mesmo `X-UL-Event-Id`; HMAC válido; lease libertado; 0 segredos nos logs — §18.6.2 |
 | DNS `api.ultimalinha.ao` | ✅ | CNAME propagado |
 | HTTPS | ✅ | Let's Encrypt, HSTS, 308 |
 | Logs sem secrets | ✅ | eventos de arranque e entregas sem segredos; nenhum segredo impresso |
@@ -349,7 +387,7 @@ Conclusão desta tentativa: o **worker de retry está activo e a executar retrie
 **Production ready: NO**
 
 Blockers:
-1. **Ciclo de retry em produção incompleto** — worker a executar retries confirmado, mas sem sucesso 500 → 200 verificado no receptor (§18.6.1); repetir com um receptor alcançável.
+1. ~~Ciclo de retry em produção~~ — **resolvido** (§18.6.2).
 2. **Railway em trial** (crédito 5 USD, cliente inactivo) — quando o crédito acabar o worker pára e deixa de haver retries. Activar um plano pago.
 3. **Deploy contínuo inexistente** — Vercel sem ligação Git (deploys da API só pela CLI; ligar em Vercel → `ul-platform` → Settings → Git, branch `master`) e Railway sem redeploy por push (verificar a Railway GitHub App).
 
