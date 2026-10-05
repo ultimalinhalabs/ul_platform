@@ -227,7 +227,7 @@ Contas autenticadas pelo dono nesta máquina (CLIs `vercel` 62.2.0 e `railway` 5
 |---|---|---|
 | Conta / equipa | `ultimalinhalabs` · equipa `ultima-linha` · plano **Hobby** | Última Linha Labs · workspace plano **HOBBY em trial** (`isTrialing: true`, crédito 5 USD, cliente `INACTIVE`) |
 | Projecto | **`ul-platform`** (`prj_vDKfmehm…`) criado; `project-gbh3l` (vazio, sem deploys, sem repo) **não tocado**; `ultimalinha-landing` não tocado | **`ul-platform`** (`b49d201c…`), ambiente `production`, serviço **`worker`** (`0f7795d4…`) |
-| Repositório | `ultimalinhalabs/ul_platform` — **a ligação Git falhou** (a Vercel GitHub App não tem acesso ao repo); deploy feito pela CLI | `ultimalinhalabs/ul_platform`, branch `master` (ligado; deploy automático a cada push) |
+| Repositório | `ultimalinhalabs/ul_platform` — **a ligação Git falhou** (a Vercel GitHub App não tem acesso ao repo); deploy feito pela CLI | `ultimalinhalabs/ul_platform`, branch `master` (ligado; o deploy inicial veio da ligação, mas um push posterior — `edc1df6` — **não** disparou redeploy: deploy automático por push não confirmado) |
 | Região | Functions em **`lhr1`** (Londres; alterado de `iad1` — a BD está em `eu-west-2`) | **EU West** (`europe-west4`), 1 réplica |
 
 ### 18.2 Vercel
@@ -298,7 +298,7 @@ O único mecanismo de teste existente, `POST /v1/organizations/:org/webhooks/:id
 2. Railway: 2 deploys falhados por configuração de região (erro meu, corrigido).
 3. `vercel link` alterou o `.gitignore` de forma a anular `!.env.example` (corrigido).
 4. A Railway marca o `railway.json` (config-as-code) como *deprecated*; continua a funcionar até **2026-12-01** — migrar antes dessa data.
-5. A Railway faz redeploy do worker a cada push para `master` (incluindo commits só de documentação) — inofensivo (estado na BD, lease), mas gasta minutos/crédito.
+5. Deploy automático da Railway por push **não funcionou**: o push `edc1df6` não gerou deploy (≥ 5 min). O worker continua no `c7dec41` (código idêntico — o commit era só documentação). Verificar o acesso da Railway GitHub App a `ultimalinhalabs/ul_platform` e os triggers do serviço; até lá, novos deploys do worker só por `railway service redeploy` / `railway up`.
 
 ### 18.9 Checklist final
 
@@ -326,6 +326,6 @@ O único mecanismo de teste existente, `POST /v1/organizations/:org/webhooks/:id
 Blockers:
 1. **Retry em produção não validado** — precisa de autorização para um teste controlado (dados de teste em produção + receptor público); ver §18.6.
 2. **Railway em trial** (crédito 5 USD, cliente inactivo) — quando o crédito acabar o worker pára e deixa de haver retries. Activar um plano pago.
-3. **Vercel sem ligação Git** — deploys da API só pela CLI; ligar `ultimalinhalabs/ul_platform` (Vercel → projecto `ul-platform` → Settings → Git), branch de produção `master`.
+3. **Deploy contínuo inexistente** — Vercel sem ligação Git (deploys da API só pela CLI; ligar em Vercel → `ul-platform` → Settings → Git, branch `master`) e Railway sem redeploy por push (verificar a Railway GitHub App).
 
 Riscos não bloqueantes: Vercel **Hobby** (uso não comercial pelos termos da Vercel — passar a Pro antes de tráfego comercial); `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_JWT_SECRET` presentes onde não são usadas (decisão: manter `env.ts`); rate limiter por instância; `railway.json` deprecated a partir de 2026-12-01; PAT do Supabase guardado localmente (revogar quando possível).
