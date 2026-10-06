@@ -103,6 +103,13 @@ export class CommercialRecordImmutableError extends AppError {
   }
 }
 
+/** Block 1D (G6) — an organization credential requires the organization's effective access to that application. */
+export class ApplicationAccessRequiredError extends AppError {
+  constructor(message = "The organization has no active access to this application") {
+    super(403, "APPLICATION_ACCESS_REQUIRED", message);
+  }
+}
+
 /** UL001 — a commercial record frozen by a database trigger. */
 export function isCommercialImmutableError(error: unknown): boolean {
   return extractPostgresErrorCode(error) === "UL001";

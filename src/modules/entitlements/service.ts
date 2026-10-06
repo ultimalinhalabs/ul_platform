@@ -2,7 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { applications, planEntitlements, plans, subscriptions } from "../../db/schema/index.js";
 import { getApplicationByKey } from "../applications/service.js";
-import { NOT_CANCELED } from "../subscriptions/service.js";
+import { SUBSCRIPTION_EFFECTIVE } from "./effectiveness.js";
 import { NotFoundError } from "../../shared/errors.js";
 
 /**
@@ -16,10 +16,10 @@ import { NotFoundError } from "../../shared/errors.js";
  *    if a concrete performance/product need for a persisted copy shows up.
  *
  * The granting subscription is "the" (at most one, by construction —
- * see below) non-canceled subscription for (organizationId,
- * applicationKey), reusing the exact same NOT_CANCELED predicate as
- * application access and subscription creation — one canonical rule,
- * not three copies of `status !== "canceled"`.
+ * see below) EFFECTIVE subscription for (organizationId, applicationKey):
+ * non-canceled and within its period (Block 1D, `SUBSCRIPTION_EFFECTIVE`
+ * in ./effectiveness.ts) — one canonical rule shared with the derived
+ * application list, not copies of `status !== "canceled"`.
  */
 
 /**
@@ -46,7 +46,9 @@ async function getGrantingSubscription(organizationId: string, applicationKey: s
       and(
         eq(subscriptions.organizationId, organizationId),
         eq(applications.key, applicationKey),
-        NOT_CANCELED,
+        // Block 1D: non-canceled AND within its period — an expired subscription grants nothing even before
+        // any housekeeping flips its status (NULL period end = no fixed end, unchanged behaviour).
+        SUBSCRIPTION_EFFECTIVE,
       ),
     )
     .orderBy(desc(subscriptions.createdAt))

@@ -2,7 +2,16 @@ import { type Request, Router } from "express";
 import { authenticate } from "../../middleware/authenticate.js";
 import { requirePlatformMembership } from "../../middleware/platformContext.js";
 import { requirePlatformPermission } from "../../middleware/requirePlatformPermission.js";
+import { z } from "zod";
 import { createAccessLink, listAccessLinks, revokeAccessLink } from "../../modules/commercial/accessLinks.service.js";
+import {
+  activateContract,
+  cancelContract,
+  getPlatformContract,
+  previewActivation,
+  revokeGrant,
+  terminateContract,
+} from "../../modules/commercial/activation.service.js";
 import type { CommercialActor } from "../../modules/commercial/events.js";
 import {
   createItem,
@@ -171,4 +180,50 @@ commercialRouter.post(
   "/platform/proposals/:proposalId/links/:linkId/revoke",
   ...send,
   asyncHandler(async (req, res) => ok(res, await revokeAccessLink(p(req, "proposalId"), p(req, "linkId"), actor(req)))),
+);
+
+// ---------------------------------------------------------------------------- Block 1D — contracts & entitlements
+// Activation and revocation: platform.entitlement.grant. Cancellation/termination: platform.contract.manage.
+// The tenant is always the contract's organization; no organizationId is read from the request.
+const grant = [authenticate, requirePlatformMembership(), requirePlatformPermission("platform.entitlement.grant")];
+const contractManage = [authenticate, requirePlatformMembership(), requirePlatformPermission("platform.contract.manage")];
+const revocationSchema = z.object({ reason: z.string().trim().min(1).max(500) }).strict();
+
+commercialRouter.get(
+  "/platform/contracts/:contractId",
+  ...read,
+  asyncHandler(async (req, res) => ok(res, await getPlatformContract(p(req, "contractId")))),
+);
+
+commercialRouter.get(
+  "/platform/contracts/:contractId/activation-preview",
+  ...read,
+  asyncHandler(async (req, res) => ok(res, await previewActivation(p(req, "contractId")))),
+);
+
+commercialRouter.post(
+  "/platform/contracts/:contractId/activation",
+  ...grant,
+  asyncHandler(async (req, res) => {
+    const { created, contract } = await activateContract(p(req, "contractId"), actor(req));
+    ok(res, contract, created ? 201 : 200);
+  }),
+);
+
+commercialRouter.post(
+  "/platform/contracts/:contractId/cancellation",
+  ...contractManage,
+  asyncHandler(async (req, res) => ok(res, await cancelContract(p(req, "contractId"), actor(req)))),
+);
+
+commercialRouter.post(
+  "/platform/contracts/:contractId/termination",
+  ...contractManage,
+  asyncHandler(async (req, res) => ok(res, await terminateContract(p(req, "contractId"), actor(req)))),
+);
+
+commercialRouter.post(
+  "/platform/entitlement-grants/:grantId/revocation",
+  ...grant,
+  asyncHandler(async (req, res) => ok(res, await revokeGrant(p(req, "grantId"), revocationSchema.parse(req.body ?? {}).reason, actor(req)))),
 );

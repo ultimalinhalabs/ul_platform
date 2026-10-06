@@ -16,7 +16,7 @@ import { requireServiceScope } from "../src/middleware/requireServiceScope.js";
 import { requireServiceOrganizationMatch } from "../src/middleware/requireServiceOrganizationMatch.js";
 import { requirePermission } from "../src/middleware/requirePermission.js";
 import { ForbiddenError, UnauthorizedError, ValidationError } from "../src/shared/errors.js";
-import { createTestOrganization, createTestUser, deleteTestOrganization, deleteTestUser } from "./helpers.js";
+import { createTestOrganization, createTestUser, deleteTestOrganization, deleteTestUser, grantTestApplicationAccess } from "./helpers.js";
 
 after(() => queryClient.end());
 
@@ -95,6 +95,7 @@ test("creating an API key with valid, allowed scopes persists and returns exactl
   const org = await createTestOrganization("scopes-create-valid");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",
@@ -117,6 +118,7 @@ test("creating an API key without a scopes field grants no scopes — a valid, e
   const org = await createTestOrganization("scopes-create-none");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",
@@ -135,6 +137,7 @@ test("creating an API key with an unknown scope fails and persists nothing", asy
   const org = await createTestOrganization("scopes-create-unknown");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     await assert.rejects(
       () =>
         createOrganizationApiKey({
@@ -157,6 +160,7 @@ test("creating an API key with a cross-application scope fails, even though the 
   const org = await createTestOrganization("scopes-create-cross-app");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     await assert.rejects(
       () =>
         createOrganizationApiKey({
@@ -179,6 +183,7 @@ test("serviceCredentialHasScope reflects exactly the granted set, nothing more",
   const org = await createTestOrganization("scopes-has-scope");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",
@@ -201,6 +206,7 @@ test("a revoked API key's granted scopes can no longer authenticate at all", asy
   const org = await createTestOrganization("scopes-revoked");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",
@@ -222,6 +228,7 @@ test("an expired API key's granted scopes can no longer authenticate at all", as
   const org = await createTestOrganization("scopes-expired");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",

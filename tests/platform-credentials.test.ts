@@ -10,7 +10,7 @@ import {
   revokePlatformApiKey,
   verifyApiKeyToken,
 } from "../src/modules/apiKeys/service.js";
-import { createTestOrganization, createTestUser, deleteTestOrganization, deleteTestUser } from "./helpers.js";
+import { createTestOrganization, createTestUser, deleteTestOrganization, deleteTestUser, grantTestApplicationAccess } from "./helpers.js";
 import { ConflictError, NotFoundError } from "../src/shared/errors.js";
 
 after(() => queryClient.end());
@@ -93,6 +93,7 @@ test("listPlatformApiKeys only ever returns organizationId = null rows, never an
   const platformKey = await createPlatformApiKey({ applicationKey: "NA_PISTA", actorUserId: actor.id });
   try {
     const { createOrganizationApiKey } = await import("../src/modules/apiKeys/service.js");
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const orgKey = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",
@@ -149,6 +150,7 @@ test("revokePlatformApiKey can never revoke an Organization's own (non-null orga
   const org = await createTestOrganization("cred-cross-scope-org", actor.id);
   try {
     const { createOrganizationApiKey } = await import("../src/modules/apiKeys/service.js");
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const orgKey = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",

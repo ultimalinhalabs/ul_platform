@@ -2,7 +2,8 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { apiKeyScopes, apiKeys, applications, serviceScopes } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
-import { ConflictError, NotFoundError, UnauthorizedError } from "../../shared/errors.js";
+import { ApplicationAccessRequiredError, ConflictError, NotFoundError, UnauthorizedError } from "../../shared/errors.js";
+import { getActiveApplicationKeys } from "../applicationAccess/service.js";
 import { getGrantedScopeKeys, validateRequestedScopes } from "../serviceScopes/service.js";
 import {
   buildApiKeyToken,
@@ -76,6 +77,14 @@ export async function createOrganizationApiKey(input: {
     .where(eq(applications.key, input.applicationKey))
     .limit(1);
   if (!application) throw new NotFoundError(`Unknown application: ${input.applicationKey}`);
+
+  // Block 1D (G6) — being an OWNER is not enough: an organization credential for an application exists only while
+  // the organization has EFFECTIVE access to it (active, application active, not ended with its contractual grant).
+  // Existing keys are untouched; only creation is gated.
+  const access = await getActiveApplicationKeys([input.organizationId]);
+  if (!(access.get(input.organizationId) ?? []).includes(application.key)) {
+    throw new ApplicationAccessRequiredError(`The organization has no active access to ${application.key}`);
+  }
 
   // Every requested scope is checked against the registry AND this
   // application's allowlist before anything is persisted — a client can

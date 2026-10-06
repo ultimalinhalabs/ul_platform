@@ -26,7 +26,7 @@ import { seed } from "../src/db/seed/index.js";
 import { EXPECTED_ISSUER } from "../src/integrations/supabase/jwt.js";
 import { createOrganizationApiKey } from "../src/modules/apiKeys/service.js";
 import { canonicalSha256 } from "../src/modules/commercial/canonicalJson.js";
-import { createTestOrganization, createTestUser } from "./helpers.js";
+import { createTestOrganization, createTestUser, grantTestApplicationAccess } from "./helpers.js";
 
 /**
  * Block 1B — commercial proposal API end to end over HTTP against the
@@ -201,6 +201,7 @@ test("2/19. without the platform permission: org OWNER 403, read-only platform r
   assert.equal(send.status, 403);
   assert.equal(send.code, "FORBIDDEN");
   assert.equal((await call("POST", `/platform/proposals/${p.proposalId}/links`, readOnly.token, {})).status, 403);
+  await grantTestApplicationAccess(activeOrgId, "NA_PISTA");
   const key = await createOrganizationApiKey({ organizationId: activeOrgId, applicationKey: "NA_PISTA", actorUserId: owner.id, scopes: ["usage.read"] });
   assert.equal((await call("GET", "/platform/proposals", key.secret)).status, 403, "service credentials never reach the platform plane");
   assert.equal((await call("GET", "/platform/proposals")).status, 401);

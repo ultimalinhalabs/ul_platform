@@ -2,6 +2,7 @@ import type {
   contractItems,
   contracts,
   contractVersions,
+  entitlementGrants,
   proposalAcceptances,
   proposalAccessLinks,
   proposalItems,
@@ -150,6 +151,29 @@ export function contractItemDto(i: typeof contractItems.$inferSelect) {
     lineTotalMinor: minorToString(i.lineTotalMinor),
     billingPeriod: i.billingPeriod,
     durationMonths: i.durationMonths,
+  };
+}
+
+/** Block 1D — a contractual entitlement grant (platform view). */
+export function grantDto(g: typeof entitlementGrants.$inferSelect) {
+  return {
+    id: g.id,
+    contractId: g.contractId,
+    contractItemId: g.contractItemId,
+    organizationId: g.organizationId,
+    applicationId: g.applicationId,
+    planId: g.planId,
+    status: g.status,
+    startsAt: g.startsAt,
+    endsAt: g.endsAt,
+    subscriptionId: g.subscriptionId,
+    applicationAccessId: g.applicationAccessId,
+    activatedAt: g.activatedAt,
+    activatedBy: g.activatedBy,
+    revokedAt: g.revokedAt,
+    revokedBy: g.revokedBy,
+    revokeReason: g.revokeReason,
+    entitlementsSnapshot: g.entitlementsSnapshot,
   };
 }
 

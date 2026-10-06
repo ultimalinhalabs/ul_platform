@@ -13,7 +13,7 @@ import {
 } from "../src/modules/apiKeys/service.js";
 import { parseApiKeyToken } from "../src/modules/apiKeys/crypto.js";
 import { ConflictError, NotFoundError, UnauthorizedError } from "../src/shared/errors.js";
-import { createTestOrganization, createTestUser, deleteTestOrganization, deleteTestUser } from "./helpers.js";
+import { createTestOrganization, createTestUser, deleteTestOrganization, deleteTestUser, grantTestApplicationAccess } from "./helpers.js";
 
 after(() => queryClient.end());
 
@@ -23,6 +23,7 @@ test("creating an API key returns the secret once and never persists it in plain
   const org = await createTestOrganization("apikey-create");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",
@@ -54,6 +55,7 @@ test("a valid API key authenticates and resolves its own application/organizatio
   const org = await createTestOrganization("apikey-verify");
 
   try {
+    await grantTestApplicationAccess(org.id, "FOI");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "FOI",
@@ -76,6 +78,7 @@ test("verifyApiKeyToken rejects a wrong secret, an unknown id, and malformed tok
   const org = await createTestOrganization("apikey-invalid");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",
@@ -105,6 +108,7 @@ test("a revoked key immediately stops authenticating", async () => {
   const org = await createTestOrganization("apikey-revoke-auth");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",
@@ -127,6 +131,7 @@ test("an expired key does not authenticate", async () => {
   const org = await createTestOrganization("apikey-expired");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",
@@ -147,6 +152,7 @@ test("a key belonging to a SUSPENDED application does not authenticate, without 
   const org = await createTestOrganization("apikey-suspended-app");
 
   try {
+    await grantTestApplicationAccess(org.id, "QUALE_A_DICA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "QUALE_A_DICA",
@@ -174,11 +180,13 @@ test("listApiKeysForOrganization and getApiKeyDetail are tenant-scoped", async (
   const orgB = await createTestOrganization("apikey-tenant-b");
 
   try {
+    await grantTestApplicationAccess(orgA.id, "NA_PISTA");
     const keyA = await createOrganizationApiKey({
       organizationId: orgA.id,
       applicationKey: "NA_PISTA",
       actorUserId: ownerA.id,
     });
+    await grantTestApplicationAccess(orgB.id, "FOI");
     await createOrganizationApiKey({
       organizationId: orgB.id,
       applicationKey: "FOI",
@@ -209,6 +217,7 @@ test("revoking a key cannot be done through another organization's context, and 
   const orgB = await createTestOrganization("apikey-revoke-tenant-b");
 
   try {
+    await grantTestApplicationAccess(orgA.id, "NA_PISTA");
     const keyA = await createOrganizationApiKey({
       organizationId: orgA.id,
       applicationKey: "NA_PISTA",
@@ -241,6 +250,7 @@ test("creation and revocation are audited, and no secret material ever appears i
   const org = await createTestOrganization("apikey-audit");
 
   try {
+    await grantTestApplicationAccess(org.id, "NA_PISTA");
     const created = await createOrganizationApiKey({
       organizationId: org.id,
       applicationKey: "NA_PISTA",

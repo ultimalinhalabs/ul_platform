@@ -2,6 +2,7 @@ import { and, eq, ne } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { applications, organizations, plans, subscriptions } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
+import { SUBSCRIPTION_EFFECTIVE } from "../entitlements/effectiveness.js";
 import { ConflictError, NotFoundError } from "../../shared/errors.js";
 
 /**
@@ -84,12 +85,20 @@ async function resolvePlanForSubscription(applicationKey: string, planKey: strin
  * (`subscriptions_org_plan_not_canceled_unique`) as a second, independent
  * safety net.
  */
-export async function createSubscription(input: {
-  organizationId: string;
-  applicationKey: string;
-  planKey: string;
-  actorUserId: string;
-}) {
+export async function createSubscription(
+  input: {
+    organizationId: string;
+    applicationKey: string;
+    planKey: string;
+    actorUserId: string;
+    /** Block 1D — contractual subscriptions carry the grant's period; omitted, the period starts now with no fixed end (as before). */
+    currentPeriodStart?: Date;
+    currentPeriodEnd?: Date | null;
+  },
+  /** Block 1D — the caller's transaction (contract activation); omitted, it opens its own exactly as before. */
+  executor?: Parameters<Parameters<typeof db.transaction>[0]>[0],
+): Promise<typeof subscriptions.$inferSelect> {
+  if (!executor) return db.transaction((tx) => createSubscription(input, tx));
   const target = await resolvePlanForSubscription(input.applicationKey, input.planKey);
 
   if (target.applicationStatus !== "ACTIVE") {
@@ -103,58 +112,58 @@ export async function createSubscription(input: {
     );
   }
 
-  return db.transaction(async (tx) => {
-    await tx
-      .select({ id: organizations.id })
-      .from(organizations)
-      .where(eq(organizations.id, input.organizationId))
-      .for("update");
+  const tx = executor;
+  await tx
+    .select({ id: organizations.id })
+    .from(organizations)
+    .where(eq(organizations.id, input.organizationId))
+    .for("update");
 
-    const [existing] = await tx
-      .select({ id: subscriptions.id })
-      .from(subscriptions)
-      .innerJoin(plans, eq(plans.id, subscriptions.planId))
-      .where(
-        and(
-          eq(subscriptions.organizationId, input.organizationId),
-          eq(plans.applicationId, target.applicationId),
-          NOT_CANCELED,
-        ),
-      )
-      .limit(1);
+  const [existing] = await tx
+    .select({ id: subscriptions.id })
+    .from(subscriptions)
+    .innerJoin(plans, eq(plans.id, subscriptions.planId))
+    .where(
+      and(
+        eq(subscriptions.organizationId, input.organizationId),
+        eq(plans.applicationId, target.applicationId),
+        NOT_CANCELED,
+      ),
+    )
+    .limit(1);
 
-    if (existing) {
-      throw new ConflictError(
-        `Organization already has an active subscription for ${input.applicationKey}`,
-      );
-    }
-
-    const [subscription] = await tx
-      .insert(subscriptions)
-      .values({
-        organizationId: input.organizationId,
-        planId: target.planId,
-        status: "active",
-        currentPeriodStart: new Date(),
-      })
-      .returning();
-    if (!subscription) throw new Error("Failed to create subscription");
-
-    await recordAuditEvent(
-      {
-        actorUserId: input.actorUserId,
-        organizationId: input.organizationId,
-        applicationId: target.applicationId,
-        action: "subscription.created",
-        targetType: "subscription",
-        targetId: subscription.id,
-        metadata: { applicationKey: input.applicationKey, planKey: input.planKey },
-      },
-      tx,
+  if (existing) {
+    throw new ConflictError(
+      `Organization already has an active subscription for ${input.applicationKey}`,
     );
+  }
 
-    return subscription;
-  });
+  const [subscription] = await tx
+    .insert(subscriptions)
+    .values({
+      organizationId: input.organizationId,
+      planId: target.planId,
+      status: "active",
+      currentPeriodStart: input.currentPeriodStart ?? new Date(),
+      currentPeriodEnd: input.currentPeriodEnd ?? null,
+    })
+    .returning();
+  if (!subscription) throw new Error("Failed to create subscription");
+
+  await recordAuditEvent(
+    {
+      actorUserId: input.actorUserId,
+      organizationId: input.organizationId,
+      applicationId: target.applicationId,
+      action: "subscription.created",
+      targetType: "subscription",
+      targetId: subscription.id,
+      metadata: { applicationKey: input.applicationKey, planKey: input.planKey },
+    },
+    tx,
+  );
+
+  return subscription;
 }
 
 export async function listSubscriptionsForOrganization(organizationId: string) {
@@ -183,12 +192,16 @@ export async function getSubscriptionDetail(organizationId: string, subscription
   return shapeSubscription(row);
 }
 
-export async function cancelSubscription(input: {
-  organizationId: string;
-  subscriptionId: string;
-  actorUserId: string;
-}) {
-  const [current] = await db
+export async function cancelSubscription(
+  input: {
+    organizationId: string;
+    subscriptionId: string;
+    actorUserId: string;
+  },
+  /** Block 1D — the caller's transaction (grant revocation); omitted, behaviour is unchanged. */
+  executor: typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0] = db,
+) {
+  const [current] = await executor
     .select({ id: subscriptions.id, status: subscriptions.status })
     .from(subscriptions)
     .where(
@@ -198,20 +211,23 @@ export async function cancelSubscription(input: {
   if (!current) throw new NotFoundError("Subscription not found");
   if (current.status === "canceled") throw new ConflictError("Subscription is already canceled");
 
-  const [updated] = await db
+  const [updated] = await executor
     .update(subscriptions)
     .set({ status: "canceled", canceledAt: new Date(), updatedAt: new Date() })
     .where(eq(subscriptions.id, input.subscriptionId))
     .returning();
   if (!updated) throw new NotFoundError("Subscription not found");
 
-  await recordAuditEvent({
-    actorUserId: input.actorUserId,
-    organizationId: input.organizationId,
-    action: "subscription.canceled",
-    targetType: "subscription",
-    targetId: input.subscriptionId,
-  });
+  await recordAuditEvent(
+    {
+      actorUserId: input.actorUserId,
+      organizationId: input.organizationId,
+      action: "subscription.canceled",
+      targetType: "subscription",
+      targetId: input.subscriptionId,
+    },
+    executor,
+  );
 
   return updated;
 }
@@ -229,7 +245,7 @@ export async function listOrganizationApplications(organizationId: string) {
     .from(subscriptions)
     .innerJoin(plans, eq(plans.id, subscriptions.planId))
     .innerJoin(applications, eq(applications.id, plans.applicationId))
-    .where(and(eq(subscriptions.organizationId, organizationId), NOT_CANCELED))
+    .where(and(eq(subscriptions.organizationId, organizationId), SUBSCRIPTION_EFFECTIVE)) // Block 1D: an expired period grants nothing
     .orderBy(applications.key);
 
   return rows.map((row) => ({

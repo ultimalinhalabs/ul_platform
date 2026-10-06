@@ -13,7 +13,7 @@ import { EXPECTED_ISSUER } from "../src/integrations/supabase/jwt.js";
 import { createOrganizationApiKey } from "../src/modules/apiKeys/service.js";
 import { resolveEffectiveApplicationRole } from "../src/modules/applicationRoles/effectiveRole.js";
 import { createSubscription } from "../src/modules/subscriptions/service.js";
-import { createTestOrganization, createTestUser, deleteTestOrganization, deleteTestUser } from "./helpers.js";
+import { createTestOrganization, createTestUser, deleteTestOrganization, deleteTestUser, grantTestApplicationAccess } from "./helpers.js";
 
 /**
  * Fase 6 — identity & organization authority, end to end over HTTP:
@@ -171,6 +171,7 @@ test("suspended organization: members get ORGANIZATION_SUSPENDED, its service ke
   await addMember(owner.id, other.id, "OWNER");
   const token = await tokenFor(owner);
   const adminToken = await tokenFor(platformAdmin);
+  await grantTestApplicationAccess(o.id, "NA_PISTA");
   const key = await createOrganizationApiKey({ organizationId: o.id, applicationKey: "NA_PISTA", actorUserId: owner.id, scopes: ["usage.read"] });
 
   assert.equal((await call("GET", `/organizations/${o.id}`, token)).status, 200);
