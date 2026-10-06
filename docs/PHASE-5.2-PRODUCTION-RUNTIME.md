@@ -389,7 +389,7 @@ Nenhum schema, migration, motor de retry ou organização existente foi alterado
 Blockers:
 1. ~~Ciclo de retry em produção~~ — **resolvido** (§18.6.2).
 2. **Railway em trial** (crédito 5 USD, cliente inactivo) — quando o crédito acabar o worker pára e deixa de haver retries. Activar um plano pago.
-3. **Deploy contínuo do worker inexistente** — a Vercel já faz deploy automático (§18.10); a Railway **não**: o serviço `worker` tem 0 deployment triggers, por isso nenhum push para `master` gera deploy do worker.
+3. ~~Deploy contínuo do worker~~ — **resolvido em 2026-10-06** (§18.10): GitHub App da Railway autorizada pelo dono em `ultimalinhalabs/ul_platform` e trigger `github`/`master` criado.
 
 Riscos não bloqueantes: Vercel **Hobby** (uso não comercial pelos termos da Vercel — passar a Pro antes de tráfego comercial); `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_JWT_SECRET` presentes onde não são usadas (decisão: manter `env.ts`); rate limiter por instância; `railway.json` deprecated a partir de 2026-12-01; PAT do Supabase guardado localmente (revogar quando possível).
 
@@ -401,3 +401,6 @@ Riscos não bloqueantes: Vercel **Hobby** (uso não comercial pelos termos da Ve
 | Vercel — push de teste | commit `e573f60` (alteração real ao relatório) empurrado às 01:26:35 → deployment `dpl_B1doB3wHtiH7mfM6XMG9vso3m76A`, `target: production`, origem Git (`master`/`e573f60`), **READY** às 01:27:12 (~25 s) |
 | Vercel — domínio | `api.ultimalinha.ao` passou a apontar para `dpl_B1doB3w…`; `/v1/health` 200, `/v1/health/ready` 200, `/v1/me` sem credenciais 401, `ulk_` forjada 401, `/package.json` 404, CORS permitido ecoado / `evil.example` ausente |
 | Railway — mesmo push | **sem** novo deploy: o worker continua em `a686f577` (`c7dec41`). Causa: `deploymentTriggers` do serviço `worker` = **vazio** (a ligação da fonte fez só o deploy inicial). O código do worker não mudou desde `c7dec41` (os commits seguintes são só documentação/`.gitignore`), por isso o worker em execução está actualizado |
+| Railway — causa e correcção | o "Could not load branches" no painel = a GitHub App da Railway sem acesso ao repo (conta pessoal `ultimalinhalabs`). O dono autorizou a app e ligou o branch: trigger `2e37fbb2…` (`provider: github`, `ultimalinhalabs/ul_platform`, `branch: master`, `checkSuites: false`) |
+| Railway — deploy ao ligar | `1873a8f4…` (commit `7021186`) **SUCCESS**; o anterior `a686f577…` ficou `REMOVED`; log `worker.started` (`environment=production`), 0 `worker.startup.db_error`, 0 `webhook.worker.error`, 1 arranque |
+| Railway — push de teste | ver linha seguinte (commit deste registo) |
