@@ -172,3 +172,112 @@ Nada em produção. As branches não estão no `master` (Vercel/Railway só faze
 | Migrations testadas | ✅ BD descartável |
 | Production migration autorizada | ⏳ |
 | Documentação / relatório final | ✅ bloco 1 · ⏳ final |
+
+---
+
+# Bloco 2 — UL Platform + Na Pista (QD preparado, sem publicação)
+
+> 2026-10-06. Branches: `ul-platform` `phase-6/identity-organization-authority` (`da9c54c` + este relatório) · `na-pista` `phase-6/ul-status-compat` (`f455a7f`, **local, sem push**) · `qualeadica` `phase-6/identity-organization-authority` (`2488f87`, **local, sem push**). Nada aplicado em produção, excepto a limpeza autorizada do incidente (B2.3).
+
+## B2.1 UL Platform — revisão final
+
+| Verificação | Resultado |
+|---|---|
+| Migrations 0012–0014 aditivas | ✅ só `ADD COLUMN … DEFAULT 'active' NOT NULL`, `CREATE TABLE`, constraints e inserções idempotentes de catálogo; nenhum `DROP`/`DELETE`/`UPDATE` de dados |
+| Defaults / constraints | ✅ `status` default `active` + `CHECK` (organizações, utilizadores, acesso); unicidade (membership, aplicação) e (organização, aplicação); FK composta `(application_id, role_key)` → catálogo da **mesma** aplicação |
+| RLS / permissões | **corrigido no Bloco 2:** as 3 tabelas novas não activavam RLS (dependiam do trigger automático do projecto Supabase) → `ENABLE ROW LEVEL SECURITY` explícito em 0013/0014; verificado: RLS ligado e **0** grants `anon`/`authenticated`. 3 permissões de plataforma novas, só para `PLATFORM_ADMIN` |
+| Acesso efectivo | **endurecido:** `/v1/me` só lista aplicações para membership `active` numa organização `active` (um utilizador `disabled` já é recusado); conceder acesso recusa organização suspensa (409) e aplicação não `ACTIVE` (409); aplicação/organização desconhecida → 404 |
+| Compatibilidade Na Pista | ✅ campos antigos de `/v1/me` intactos; o Na Pista não verifica acesso a aplicações (usa entitlements) |
+| Rollback | §11 (inalterado) |
+
+Testes (BD descartável, sem `.env`): typecheck ✅ · `eslint src tests api` ✅ · migrate 0000–0014 ✅ · seed ×2 (idempotente) ✅ · smoke ✅ · build ✅ · **`identity-organization-authority.test.ts` 13/13** (+4: matriz completa do fallback OWNER/ADMIN/MANAGER/STAFF nas duas aplicações; estados do acesso efectivo; unicidade + FK composta; trilho de auditoria completo; RLS) · **suite completa 235/236 — não 100% verde:** a falha é o teste intermitente pré-existente `listPlatformAuditLogs paginates…` (isolado 7/7), identificado separadamente desde a Fase 5.
+
+## B2.2 Na Pista — compatibilidade (branch local `phase-6/ul-status-compat`, `f455a7f`)
+
+Resolução real: identidade e memberships via `GET /v1/me` (cache 15 s), organização pela rota, role da UL, capacidades locais (`requireCapability`), serviço via `GET /v1/service/me`. **Nenhuma autoridade paralela** — o Na Pista só lê o que a UL devolve.
+
+| Regra | Antes | Depois |
+|---|---|---|
+| Utilizador UL `disabled` | bloqueado, mas como 401 genérico | **403 `ACCOUNT_DISABLED`** (resposta da UL ou `status` no corpo) |
+| Organização UL `suspended` (humano) | **não verificado** (gap da auditoria) | **403 `ORGANIZATION_SUSPENDED`**; as outras organizações do utilizador continuam |
+| Organização UL `suspended` (chave de serviço) | 401 genérico | **403 `ORGANIZATION_SUSPENDED`** |
+| Membership `suspended` | bloqueada | bloqueada (inalterado) |
+| Role | role da organização | role de aplicação `NA_PISTA` quando a UL o envia (explícito, ou fallback = mesmo role), senão o da organização |
+| Acesso à aplicação | — | flag `NA_PISTA_REQUIRE_UL_APPLICATION_ACCESS` (**default `false`**: sem mudança de comportamento; ligar só depois de um backfill autorizado de acessos `NA_PISTA`) |
+| UL sem os campos novos | — | continua a funcionar (campos opcionais) |
+| Cache de identidade | 15 s | **mantida (15 s)**: limite de desactualização documentado e testado — dentro da janela 1 chamada à UL; uma revogação aplica-se assim que a janela expira, nunca depois |
+
+Testes (sem BD, UL simulada por servidor HTTP local): **`platform-identity-status.test.ts` 10/10** (activo; desactivado; token inválido; organização suspensa; membership suspensa; organização desconhecida; acesso cruzado; compatibilidade; role de aplicação; acesso à aplicação com flag desligada/ligada, válido/revogado; cache 15 s; serviço-a-serviço válido/suspenso/revogado/isolado) + `test-database-guard.test.ts` 1/1 · **suite unitária completa 247/247** · typecheck ✅ · build ✅ · eslint dos ficheiros alterados ✅ (o eslint completo mantém 18 erros `no-explicit-any` **pré-existentes** em `tests/e2e/*`, dívida registada na F29A) · mutação: remover a verificação de organização suspensa → teste falha (detectado). **Integração/e2e não executados** (dependem de BD/UL reais — ver incidente).
+
+## B2.3 Incident — Na Pista Production Integration Test
+
+| | |
+|---|---|
+| Quando | 2026-10-06, 03:00:53 → 03:04:39 UTC (≈4 min) |
+| Causa | ao adicionar o guard de BD de testes ao Na Pista, uma edição por script **falhou** (assertion; ficheiro inalterado) e o **mesmo comando composto continuou** e executou `tests/integration/appointments.test.ts` com o `.env` real — escolhido para "provar" que o guard recusava a BD de produção. Sem guard ligado, o teste correu contra a **BD de produção do Na Pista** (`jpwoyo…`). Erros do agente: (1) não parar após a falha da edição; (2) validar um guard usando o alvo real em vez de um host fictício |
+| Impacto | **273 linhas sintéticas** em **14 `organization_id` aleatórios novos**: `appointments` 7, `audit_events` 96, `customers` 14, `organization_settings` 13, `professional_schedule_exceptions` 2, `professional_schedule_rules` 98, `professional_services` 14, `professionals` 14, `services` 15 |
+| Linhas pré-existentes alteradas | **0** (verificado em todas as tabelas com `created_at`/`updated_at`) |
+| Organizações reais | nenhuma tocada: os 14 ids não são organizações UL (0/14), não têm linhas anteriores à execução e não são Wandipopela nem Bué Power (essas vivem no QD, outra BD) |
+| Limpeza (autorizada pelo dono, só estes 14 ids) | uma transacção; pré-verificações (contagem exacta por tabela = 273; 0 linhas destes ids anteriores a 03:00 UTC; lista de tabelas revista; sem triggers/rules); `DELETE … WHERE organization_id = ANY(14 ids)` por ordem de FKs, cada `DELETE` com contagem verificada; pós-verificações dentro da transacção (0 linhas para os ids; totais das outras organizações iguais aos de antes) → **COMMIT, 273 linhas removidas**. Sem `TRUNCATE`, sem janela temporal, sem limpeza de fixtures existentes |
+| Estado final | 0 linhas para os 14 ids (verificação independente posterior); totais das restantes organizações inalterados e iguais aos da auditoria da Fase 4 (`products` 1283, `appointments` 1420, `orders` 438, `customers` 1199, `organization_settings` 776, `audit_events` 18 577) |
+| Ids removidos | `e9aea737-0e2a-46d2-a4c2-88718347df28`, `680e5e4a-462d-4bf7-9985-f4b250e0073d`, `2dce98ba-c368-4090-a33b-1c5e4cb49eca`, `6cd9c177-a798-4cc3-959c-ab138eed69fc`, `c8a123c9-7527-40bb-95c1-6c144ca06b3e`, `8aacc709-76eb-4966-8852-778158f864de`, `54d48707-2e78-4d8b-a847-0a2c90318c54`, `9eda8f1b-58b9-4b88-ae7e-eb1edb3f4dd9`, `05a36870-d0bc-437b-9bb5-e15d795c34a1`, `008ffe37-2112-46aa-ab9c-1a96da73876d`, `3758168f-8459-414c-b36b-11b772bdb668`, `1399aa4f-afa5-49b3-ab78-47df5c5cf6ed`, `f8e72b71-b098-4b13-96ef-0eff39bf1117`, `cc4b85b9-4573-4201-8913-90a8e7e01a40` |
+
+**Correcção — barreira fail-closed:** `na-pista/src/db/testDatabaseGuard.ts`, ligado em `src/db/index.ts` (o único ponto de ligação): sob o runner de testes, um `NA_PISTA_DATABASE_URL` não local **aborta antes de qualquer ligação**, salvo `TEST_DATABASE_ALLOW_REMOTE=true` explícito. Provado só com hosts fictícios (`db.remote.invalid`): import recusado; host local permitido; **processos-filho** dos testes e2e (`startChildServer`) herdam o contexto de teste e também recusam. A BD de produção nunca foi usada para o provar. Atenção: o guard só existe neste branch local; noutros branches do Na Pista o `.env` continua a apontar para produção **sem guard** — publicar/mergear este guard é recomendado antes de qualquer outra execução de integração/e2e.
+
+**Lição operacional:** comandos compostos com etapas dependentes correm com `set -o pipefail` e encadeamento `&&` (ou verificação explícita); uma falha de edição, patch ou assertion **pára** a sequência — nunca há um teste a seguir a um patch falhado. Guards de segurança provam-se com alvos fictícios, nunca com o alvo real.
+
+## B2.4 QD — preparação (sem publicação)
+
+| Verificação | Resultado |
+|---|---|
+| Branch / commit | `phase-6/identity-organization-authority` @ `2488f87`; alterações do dono (`api/package.json`, `api/scripts/seed/wandipopela-sports.seed.ts`) fora do commit |
+| typecheck · build | ✅ · ✅ (`tsc` para pasta temporária; `dist/` do repo intocado) |
+| Suite completa (BD descartável, migrations 0000–0027 + seeds, sem `.env`) | **685/686 — não 100% verde:** a falha é `queue-reclaim-stale.test.ts` (`reclaimStale() devolve uma linha PROCESSING abandonada`), **intermitente mesmo isolado** (2/4, 4/4, 2/4); nem o teste nem o módulo `queue` foram tocados pelo commit da Fase 6; no Bloco 1 a mesma suite deu 686/686. Testes de identidade da Fase 6: 11/11 |
+| `IDENTITY_AUTHORITY` | `QD` (default) — comportamento actual |
+
+Revisão de código (sem alterações nesta etapa, por instrução):
+
+- `UlIdentityVerifier` ✅ contrato UL (`/v1/me`), sem segredos UL, fail closed, utilizador `disabled` → não autenticado, cache por hash do token. **Menor:** a cache nunca remove entradas expiradas (cresce com tokens distintos) — podar no `set`.
+- Re-login ✅ 3 condições + recusa explícita; órfãos nunca ligados; sem profiles duplicados; auditado. **A corrigir antes do corte:** a procura do profile é por `lower(email)` com `limit(1)`, mas o `UNIQUE` de `profiles.email` é sensível a maiúsculas — se existirem dois profiles que só diferem em maiúsculas, a escolha seria arbitrária. Correcção proposta: obter até 2 e **recusar** (`IDENTITY_LINK_REFUSED`, motivo `ambiguous_email`) quando houver mais de um, com teste.
+- Shadow mode: **ainda não implementado** (bloco seguinte). Desenho: para cada pedido com autoridade UL (ou um job de comparação), `principal.ul.memberships` → organização QD por `ecosystem_organization_links` → role QD esperado = `applications[QUALE_A_DICA].roleKey` (explícito ou fallback) vs `organization_members.role`; divergência registada (log estruturado/métrica/`activities`), autorização efectiva inalterada. Requer acesso `QUALE_A_DICA` concedido na UL (sem acesso → divergência `no_application_access`).
+
+**Publicação pelo owner (posterior):** com a conta que tem acesso a `airtonalexandrelda-cloud/qualeadica`, em `qualeadica/`: `git switch phase-6/identity-organization-authority`, confirmar `git log --oneline -1` = `2488f87`, depois `git push -u origin phase-6/identity-organization-authority`. Não fazer merge para `main` (o `main` do QD pode fazer deploy automático) antes da revisão e das correcções acima.
+
+## B2.5 Wandipopela — checklist técnico do piloto (NÃO executado)
+
+| # | Passo | Onde | Verificação | Rollback |
+|---|---|---|---|---|
+| 0 | Pré-requisitos: `0012–0014` em produção (autorizado); correcção `ambiguous_email` no QD; shadow mode implementado e testado | UL / QD | testes + revisão | — |
+| 1 | Conta UL do owner: signup email/password com o **mesmo email** do profile QD do owner; email confirmado | Auth UL | `/v1/me` → `emailVerified: true` | apagar a conta UL (sem efeito no QD) |
+| 2 | Organização UL "Wandipopela Sports" | UL | `organizations.status = active` | remover a org UL (sem efeito no QD) |
+| 3 | Membership OWNER do owner | UL | `/v1/me` → membership `active`, `roleKey OWNER` | suspender/remover a membership |
+| 4 | Acesso `QUALE_A_DICA` (platform admin, auditado; **sem subscrição**) | UL | `/v1/me` → `applications: [{QUALE_A_DICA, OWNER}]` | revogar o acesso |
+| 5 | Link de organização: QD `52fc5f67-a9db-45a4-8263-16a59c60c8c5` ↔ UL org | QD `ecosystem_organization_links` | `getUlOrganizationId` | remover a linha |
+| 6 | Link de identidade: nasce no 1.º login UL do owner (re-login controlado, `verified_email_relogin`) | QD `ecosystem_identity_links` | `req.user.id` = profile QD do owner | remover a linha |
+| 7 | Shadow membership activo | QD | logs/métricas de divergência | desligar |
+| 8 | Zero divergências para a Wandipopela durante a janela de observação | QD | relatório | — |
+| 9 | Re-login controlado: `IDENTITY_AUTHORITY=UL` + Dashboard QD no Auth UL; o owner entra com a conta UL e vê os mesmos dados (contactos, conversas, canal WhatsApp) | QD | contagens antes/depois iguais | `IDENTITY_AUTHORITY=QD` |
+| 10 | Rollback documentado e ensaiado; nenhum id QD alterado em nenhum passo | — | — | — |
+
+Bué Power: **nenhuma operação e nenhuma leitura adicional** neste bloco.
+
+## B2.6 Critério de conclusão do Bloco 2
+
+| Item | Estado |
+|---|---|
+| UL migrations 0012–0014 revistas | ✅ (+ RLS explícito) |
+| UL testes completos | ✅ Fase 6 13/13 · suite 235/236 (intermitente pré-existente, separada) |
+| UL build/typecheck/smoke | ✅ |
+| Application access validado | ✅ |
+| Application roles validados | ✅ |
+| Status guards validados | ✅ |
+| `/v1/me` validado | ✅ |
+| Na Pista compatibility validada | ✅ unit 247/247 (integração/e2e não executados) |
+| Na Pista status handling corrigido | ✅ (branch local) |
+| Cache de 15 s documentada/testada | ✅ |
+| QD preparado localmente | ✅ 685/686 (intermitente pré-existente, separada); 2 achados de revisão por corrigir antes do corte |
+| QD não publicado | ✅ |
+| Wandipopela não tocada | ✅ |
+| Bué Power não tocada | ✅ |
+| Incidente documentado e limpo | ✅ |
+| Relatório actualizado | ✅ |
