@@ -41,6 +41,13 @@ export class OrganizationSuspendedError extends AppError {
   }
 }
 
+/** Block 0 — the plan is contracted through Última Linha (proposal → contract), not self-subscribed. */
+export class PlanRequiresContractError extends AppError {
+  constructor(message = "This plan is contracted through Última Linha and cannot be self-subscribed") {
+    super(403, "PLAN_REQUIRES_CONTRACT", message);
+  }
+}
+
 export class NotFoundError extends AppError {
   constructor(message = "Resource not found") {
     super(404, "NOT_FOUND", message);
