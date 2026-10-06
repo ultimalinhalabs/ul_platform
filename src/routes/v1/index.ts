@@ -19,6 +19,8 @@ import { subscriptionsRouter } from "./subscriptions.js";
 import { usageRouter } from "./usage.js";
 import { webhooksRouter } from "./webhooks.js";
 import { applicationAccessRouter } from "./applicationAccess.js";
+import { commercialRouter } from "./commercial.js";
+import { publicProposalsRouter } from "./publicProposals.js";
 
 export const v1Router = Router();
 
@@ -42,3 +44,5 @@ v1Router.use(usageRouter);
 v1Router.use(environmentsRouter);
 v1Router.use(integrationsRouter);
 v1Router.use(platformRouter);
+v1Router.use(commercialRouter);
+v1Router.use(publicProposalsRouter);

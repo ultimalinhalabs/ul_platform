@@ -91,3 +91,29 @@ function extractPostgresErrorCode(error: unknown): string | undefined {
 export function isUniqueViolationError(error: unknown): boolean {
   return extractPostgresErrorCode(error) === "23505";
 }
+
+/**
+ * Block 1B — the commercial history guards (migrations 0016–0019) raise
+ * SQLSTATE UL001 when a frozen record is changed; services raise the same
+ * semantic error up-front so the API answers identically either way.
+ */
+export class CommercialRecordImmutableError extends AppError {
+  constructor(message = "This commercial record can no longer be changed") {
+    super(409, "COMMERCIAL_RECORD_IMMUTABLE", message);
+  }
+}
+
+/** UL001 — a commercial record frozen by a database trigger. */
+export function isCommercialImmutableError(error: unknown): boolean {
+  return extractPostgresErrorCode(error) === "UL001";
+}
+
+/** 23514 — check_violation (including business rules enforced by commercial triggers). */
+export function isCheckViolationError(error: unknown): boolean {
+  return extractPostgresErrorCode(error) === "23514";
+}
+
+/** 23503 — foreign_key_violation (e.g. history that RESTRICTs a delete). */
+export function isForeignKeyViolationError(error: unknown): boolean {
+  return extractPostgresErrorCode(error) === "23503";
+}
