@@ -117,5 +117,28 @@ export const createAccessLinkSchema = z
   })
   .strict();
 
+/**
+ * Block 1C — acceptance by the verified recipient. The request names the
+ * EXACT version, option and content hash it was shown; "the current
+ * version" is never accepted implicitly. `organization` is either an
+ * existing organization the user OWNS or a new one created in the same
+ * transaction. `consent: true` is the user's affirmative act; the consent
+ * TEXT is defined by the server (modules/commercial/consent.ts).
+ */
+export const acceptProposalSchema = z
+  .object({
+    versionId: z.string().uuid(),
+    optionId: z.string().uuid(),
+    contentSha256: z.string().regex(/^[0-9a-f]{64}$/),
+    organization: z.union([z.object({ id: z.string().uuid() }).strict(), z.object({ create: z.object({ name: text(120) }).strict() }).strict()]).optional(),
+    signerName: text(200),
+    signerTitle: optionalText(200),
+    consent: z.literal(true),
+  })
+  .strict();
+
+/** `Idempotency-Key` header: the same key replays the same acceptance. */
+export const idempotencyKeySchema = z.string().regex(/^[A-Za-z0-9._:-]{8,200}$/, "Idempotency-Key must be 8–200 characters of [A-Za-z0-9._:-]");
+
 /** Public resolution: the token travels in the body (request logs only record the path). Shape errors become the uniform 404. */
 export const resolvePublicProposalSchema = z.object({ token: z.string().max(200) }).strict();

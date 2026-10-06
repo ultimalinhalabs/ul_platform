@@ -1,4 +1,14 @@
-import type { proposalAccessLinks, proposalItems, proposalOptions, proposals, proposalVersions } from "../../db/schema/index.js";
+import type {
+  contractItems,
+  contracts,
+  contractVersions,
+  proposalAcceptances,
+  proposalAccessLinks,
+  proposalItems,
+  proposalOptions,
+  proposals,
+  proposalVersions,
+} from "../../db/schema/index.js";
 import { minorToString } from "./money.js";
 
 /**
@@ -88,6 +98,58 @@ export function optionDto(o: OptionRow, items: ReturnType<typeof itemDto>[]) {
     isRecommended: o.isRecommended,
     totalMinor: minorToString(o.totalMinor),
     items,
+  };
+}
+
+/** Block 1C — acceptance evidence as returned to its own client (no IP: never recorded, see consent/D3). */
+export function acceptanceDto(a: typeof proposalAcceptances.$inferSelect) {
+  return {
+    id: a.id,
+    proposalId: a.proposalId,
+    versionId: a.versionId,
+    optionId: a.optionId,
+    organizationId: a.organizationId,
+    contentSha256: a.contentSha256,
+    acceptedByUserId: a.acceptedByUserId,
+    signerName: a.signerName,
+    signerTitle: a.signerTitle,
+    signerEmail: a.signerEmail,
+    termsTemplateId: a.termsTemplateId,
+    consentSha256: a.consentSha256,
+    acceptedAt: a.acceptedAt,
+  };
+}
+
+export function contractSummaryDto(c: typeof contracts.$inferSelect, currentVersion: typeof contractVersions.$inferSelect | null) {
+  return {
+    id: c.id,
+    number: c.number,
+    organizationId: c.organizationId,
+    sourceAcceptanceId: c.sourceAcceptanceId,
+    status: c.status,
+    currency: c.currency,
+    totalMinor: minorToString(c.totalMinor),
+    effectiveAt: c.effectiveAt,
+    startsAt: c.startsAt,
+    endsAt: c.endsAt,
+    renewalPolicy: c.renewalPolicy,
+    currentVersion: currentVersion ? { id: currentVersion.id, versionNo: currentVersion.versionNo, contentSha256: currentVersion.contentSha256, termsSha256: currentVersion.termsSha256 } : null,
+    createdAt: c.createdAt,
+  };
+}
+
+export function contractItemDto(i: typeof contractItems.$inferSelect) {
+  return {
+    id: i.id,
+    sort: i.sort,
+    kind: i.kind,
+    title: i.title,
+    description: i.description,
+    quantity: i.quantity,
+    unitPriceMinor: minorToString(i.unitPriceMinor),
+    lineTotalMinor: minorToString(i.lineTotalMinor),
+    billingPeriod: i.billingPeriod,
+    durationMonths: i.durationMonths,
   };
 }
 
