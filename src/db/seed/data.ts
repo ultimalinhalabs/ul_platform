@@ -37,6 +37,8 @@ export const PERMISSIONS = [
   { key: "webhook.manage", description: "Create/revoke an organization's webhook endpoints." },
   { key: "webhook.read", description: "View an organization's webhook endpoints (never secrets)." },
   { key: "usage.read", description: "View an organization's recorded usage." },
+  // Block 1A — also inserted by migration 0015. Not assigned to any role yet (functional assignment comes with the client APIs).
+  { key: "commercial.read", description: "View the organization's own proposals and contracts (read-only)." },
 ] as const;
 
 /**
@@ -210,6 +212,12 @@ export const PLATFORM_PERMISSIONS = [
   { key: "platform.organization.manage", description: "Suspend/reactivate organizations (organizations.status)." },
   { key: "platform.user.manage", description: "Disable/reactivate platform users (users.status)." },
   { key: "platform.application_access.manage", description: "Grant/revoke an organization's access to an application (separate from billing)." },
+  // Block 1A — commercial domain; also inserted by migration 0015 (granted to PLATFORM_ADMIN there and below).
+  { key: "platform.commercial.read", description: "Read proposals, contracts and entitlement grants of every organization." },
+  { key: "platform.proposal.manage", description: "Create/edit proposals and proposal versions (drafts only)." },
+  { key: "platform.proposal.send", description: "Send a proposal version (freeze it) and issue/revoke its access links." },
+  { key: "platform.contract.manage", description: "Manage contracts generated from accepted proposals." },
+  { key: "platform.entitlement.grant", description: "Activate/revoke entitlement grants (creates subscriptions/application access)." },
 ] as const;
 
 export const PLATFORM_ROLE_PERMISSIONS: Record<(typeof PLATFORM_ROLES)[number]["key"], string[]> = {
