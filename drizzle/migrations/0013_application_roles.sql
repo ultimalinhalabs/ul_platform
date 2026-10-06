@@ -37,3 +37,7 @@ JOIN (VALUES
   ('NA_PISTA', 'STAFF', 'Staff', 'Baseline operational access inside Na Pista.')
 ) AS v("app_key", "key", "name", "description") ON a."key" = v."app_key"
 ON CONFLICT ("application_id", "key") DO NOTHING;
+--> statement-breakpoint
+-- Fase 6 — defence in depth: new public tables are closed to the Supabase Data API explicitly (RLS on, no policies), like every other UL table — not left to the project's auto-enable trigger.
+ALTER TABLE "application_roles" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "membership_application_roles" ENABLE ROW LEVEL SECURITY;

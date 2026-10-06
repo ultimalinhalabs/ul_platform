@@ -49,7 +49,12 @@ meRouter.get(
         roleKey: m.roleKey,
         status: m.status,
         organization: { id: m.organizationId, name: m.organizationName, slug: m.organizationSlug, status: m.organizationStatus },
-        applications: (accessByOrganization.get(m.organizationId) ?? []).map((applicationKey) => {
+        // Effective access needs an ACTIVE membership in an ACTIVE organization (and the user is
+        // active, or this request would already have been refused with ACCOUNT_DISABLED).
+        applications: (m.status === "active" && m.organizationStatus === "active"
+          ? (accessByOrganization.get(m.organizationId) ?? [])
+          : []
+        ).map((applicationKey) => {
           const role = resolveEffectiveApplicationRole({
             applicationKey,
             organizationRoleKey: m.roleKey,

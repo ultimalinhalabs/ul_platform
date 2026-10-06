@@ -7,7 +7,7 @@ import { SignJWT } from "jose";
 import { app } from "../src/app.js";
 import { env } from "../src/config/env.js";
 import { db, queryClient } from "../src/db/index.js";
-import { memberships, platformMemberships, platformRoles, roles } from "../src/db/schema/index.js";
+import { auditLogs, membershipApplicationRoles, memberships, platformMemberships, platformRoles, roles } from "../src/db/schema/index.js";
 import { seed } from "../src/db/seed/index.js";
 import { EXPECTED_ISSUER } from "../src/integrations/supabase/jwt.js";
 import { createOrganizationApiKey } from "../src/modules/apiKeys/service.js";
@@ -290,4 +290,95 @@ test("platform operations require the platform permission (an organization OWNER
   assert.equal((await call("PATCH", `/platform/users/${owner.id}/status`, token, { status: "disabled" })).status, 403);
   assert.equal((await call("PUT", `/platform/organizations/${o.id}/applications/QUALE_A_DICA/access`, token)).status, 403);
   assert.equal((await call("PATCH", `/platform/organizations/${o.id}/status`, await tokenFor(platformAdmin), { status: "frozen" })).status, 400);
+});
+
+test("fallback covers every organization role for both applications (QD: OWNER/ADMIN/AGENT; Na Pista keeps its own roles)", () => {
+  const qd = ["OWNER", "ADMIN", "MANAGER", "STAFF"].map((r) => resolveEffectiveApplicationRole({ applicationKey: "QUALE_A_DICA", organizationRoleKey: r })?.roleKey);
+  const np = ["OWNER", "ADMIN", "MANAGER", "STAFF"].map((r) => resolveEffectiveApplicationRole({ applicationKey: "NA_PISTA", organizationRoleKey: r })?.roleKey);
+  assert.deepEqual(qd, ["OWNER", "ADMIN", "AGENT", "AGENT"]);
+  assert.deepEqual(np, ["OWNER", "ADMIN", "MANAGER", "STAFF"]);
+});
+
+test("effective access needs an active membership in an active organization; grants are refused for suspended orgs and unknown apps", async () => {
+  const owner = await user("p6-eff-owner");
+  const agent = await user("p6-eff-agent");
+  const o = await org("p6-eff", owner.id);
+  await addMember(owner.id, o.id, "OWNER");
+  const agentMembership = await addMember(agent.id, o.id, "STAFF");
+  const adminToken = await tokenFor(platformAdmin);
+  const agentToken = await tokenFor(agent);
+
+  assert.equal((await call("PUT", `/platform/organizations/${o.id}/applications/QUALE_A_DICA/access`, adminToken)).status, 200);
+  assert.deepEqual(membershipIn(await call("GET", "/me", agentToken), o.id).applications, [{ key: "QUALE_A_DICA", roleKey: "AGENT", roleSource: "fallback" }]);
+
+  await db.update(memberships).set({ status: "suspended" }).where(eq(memberships.id, agentMembership.id));
+  let m = membershipIn(await call("GET", "/me", agentToken), o.id);
+  assert.equal(m.status, "suspended");
+  assert.deepEqual(m.applications, [], "suspended membership → no effective access");
+  await db.update(memberships).set({ status: "active" }).where(eq(memberships.id, agentMembership.id));
+
+  assert.equal((await call("PATCH", `/platform/organizations/${o.id}/status`, adminToken, { status: "suspended" })).status, 200);
+  m = membershipIn(await call("GET", "/me", agentToken), o.id);
+  assert.deepEqual(m.applications, [], "suspended organization → no effective access");
+  const refused = await call("PUT", `/platform/organizations/${o.id}/applications/NA_PISTA/access`, adminToken);
+  assert.equal(refused.status, 409, "no new access for a suspended organization");
+  assert.equal((await call("PATCH", `/platform/organizations/${o.id}/status`, adminToken, { status: "active" })).status, 200);
+  assert.equal(membershipIn(await call("GET", "/me", agentToken), o.id).applications.length, 1, "reactivation restores access");
+
+  assert.equal((await call("PUT", `/platform/organizations/${o.id}/applications/NOPE/access`, adminToken)).status, 404);
+  assert.equal((await call("PUT", `/platform/organizations/${randomUUID()}/applications/QUALE_A_DICA/access`, adminToken)).status, 404);
+});
+
+test("one application role per (membership, application) and a complete audit trail", async () => {
+  const owner = await user("p6-audit-owner");
+  const member = await user("p6-audit-member");
+  const o = await org("p6-audit", owner.id);
+  const ownerMembership = await addMember(owner.id, o.id, "OWNER");
+  const mm = await addMember(member.id, o.id, "MANAGER");
+  const ownerToken = await tokenFor(owner);
+  const adminToken = await tokenFor(platformAdmin);
+  const rolePath = `/organizations/${o.id}/memberships/${mm.id}/applications/QUALE_A_DICA/role`;
+
+  assert.equal((await call("PUT", rolePath, ownerToken, { roleKey: "AGENT" })).status, 200);
+  assert.equal((await call("PUT", rolePath, ownerToken, { roleKey: "ADMIN" })).status, 200);
+  const rowsForMembership = await db.select().from(membershipApplicationRoles).where(eq(membershipApplicationRoles.membershipId, mm.id));
+  assert.equal(rowsForMembership.length, 1, "replaced, never duplicated");
+  assert.equal(rowsForMembership[0]!.roleKey, "ADMIN");
+  await assert.rejects(
+    () => db.insert(membershipApplicationRoles).values({ membershipId: mm.id, applicationId: rowsForMembership[0]!.applicationId, roleKey: "AGENT" }),
+    "the unique index refuses a second row",
+  );
+  await assert.rejects(
+    () => db.insert(membershipApplicationRoles).values({ membershipId: ownerMembership.id, applicationId: rowsForMembership[0]!.applicationId, roleKey: "MANAGER" }),
+    "the composite FK refuses a role outside the application's catalog",
+  );
+
+  assert.equal((await call("PUT", `/platform/organizations/${o.id}/applications/QUALE_A_DICA/access`, adminToken)).status, 200);
+  assert.equal((await call("DELETE", `/platform/organizations/${o.id}/applications/QUALE_A_DICA/access`, adminToken)).status, 200);
+  assert.equal((await call("PATCH", `/platform/organizations/${o.id}/status`, adminToken, { status: "suspended" })).status, 200);
+  assert.equal((await call("PATCH", `/platform/organizations/${o.id}/status`, adminToken, { status: "active" })).status, 200);
+  assert.equal((await call("DELETE", rolePath, ownerToken)).status, 200);
+
+  const actions = (await db.select({ action: auditLogs.action }).from(auditLogs).where(eq(auditLogs.organizationId, o.id))).map((a) => a.action);
+  for (const expected of [
+    "membership.application_role.set",
+    "membership.application_role.removed",
+    "organization.application_access.granted",
+    "organization.application_access.revoked",
+    "organization.suspended",
+    "organization.reactivated",
+  ]) {
+    assert.ok(actions.includes(expected), `audit has ${expected}`);
+  }
+});
+
+test("new Fase 6 tables are closed to the Supabase Data API (RLS on)", async () => {
+  const rows = (await db.execute(sql`select relname, relrowsecurity from pg_class
+    where relnamespace = 'public'::regnamespace and relname in ('application_roles', 'membership_application_roles', 'organization_application_access')
+    order by relname`)) as unknown as Array<{ relname: string; relrowsecurity: boolean }>;
+  assert.deepEqual(rows.map((r) => [r.relname, r.relrowsecurity]), [
+    ["application_roles", true],
+    ["membership_application_roles", true],
+    ["organization_application_access", true],
+  ]);
 });

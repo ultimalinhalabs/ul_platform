@@ -20,3 +20,6 @@ INSERT INTO "platform_role_permissions" ("platform_role_id", "platform_permissio
 SELECT r."id", p."id" FROM "platform_roles" r, "platform_permissions" p
 WHERE r."key" = 'PLATFORM_ADMIN' AND p."key" = 'platform.application_access.manage'
 ON CONFLICT DO NOTHING;
+--> statement-breakpoint
+-- Fase 6 — defence in depth: closed to the Supabase Data API explicitly (RLS on, no policies).
+ALTER TABLE "organization_application_access" ENABLE ROW LEVEL SECURITY;

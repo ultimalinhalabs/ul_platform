@@ -2,7 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { applications, organizationApplicationAccess, organizations } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
-import { NotFoundError } from "../../shared/errors.js";
+import { ConflictError, NotFoundError } from "../../shared/errors.js";
 
 /**
  * Fase 6 — Organization → Application ACCESS, separate from billing.
@@ -13,23 +13,28 @@ import { NotFoundError } from "../../shared/errors.js";
 
 async function resolveOrganizationAndApplication(organizationId: string, applicationKey: string) {
   const [organization] = await db
-    .select({ id: organizations.id })
+    .select({ id: organizations.id, status: organizations.status })
     .from(organizations)
     .where(eq(organizations.id, organizationId))
     .limit(1);
   if (!organization) throw new NotFoundError("Organization not found");
   const [application] = await db
-    .select({ id: applications.id, key: applications.key })
+    .select({ id: applications.id, key: applications.key, status: applications.status })
     .from(applications)
     .where(eq(applications.key, applicationKey))
     .limit(1);
   if (!application) throw new NotFoundError(`Unknown application: ${applicationKey}`);
-  return { organizationId: organization.id, application };
+  return { organizationId: organization.id, organizationStatus: organization.status, application };
 }
 
 /** Idempotent: grants (or re-activates) access. Platform-admin operation. */
 export async function grantApplicationAccess(input: { organizationId: string; applicationKey: string; actorUserId: string }) {
-  const { organizationId, application } = await resolveOrganizationAndApplication(input.organizationId, input.applicationKey);
+  const { organizationId, organizationStatus, application } = await resolveOrganizationAndApplication(
+    input.organizationId,
+    input.applicationKey,
+  );
+  if (organizationStatus !== "active") throw new ConflictError("Cannot grant application access to a suspended organization");
+  if (application.status !== "ACTIVE") throw new ConflictError(`Application ${application.key} is not active`);
   const [row] = await db
     .insert(organizationApplicationAccess)
     .values({ organizationId, applicationId: application.id, status: "active", grantedBy: input.actorUserId })
