@@ -389,6 +389,15 @@ Nenhum schema, migration, motor de retry ou organização existente foi alterado
 Blockers:
 1. ~~Ciclo de retry em produção~~ — **resolvido** (§18.6.2).
 2. **Railway em trial** (crédito 5 USD, cliente inactivo) — quando o crédito acabar o worker pára e deixa de haver retries. Activar um plano pago.
-3. **Deploy contínuo inexistente** — Vercel sem ligação Git (deploys da API só pela CLI; ligar em Vercel → `ul-platform` → Settings → Git, branch `master`) e Railway sem redeploy por push (verificar a Railway GitHub App).
+3. **Deploy contínuo do worker inexistente** — a Vercel já faz deploy automático (§18.10); a Railway **não**: o serviço `worker` tem 0 deployment triggers, por isso nenhum push para `master` gera deploy do worker.
 
 Riscos não bloqueantes: Vercel **Hobby** (uso não comercial pelos termos da Vercel — passar a Pro antes de tráfego comercial); `SUPABASE_SERVICE_ROLE_KEY`/`SUPABASE_JWT_SECRET` presentes onde não são usadas (decisão: manter `env.ts`); rate limiter por instância; `railway.json` deprecated a partir de 2026-12-01; PAT do Supabase guardado localmente (revogar quando possível).
+
+### 18.10 Deploy contínuo — verificação (2026-10-06)
+
+| Plataforma | Evidência |
+|---|---|
+| Vercel — ligação Git | projecto `ul-platform` ligado pelo dono a `github` → `ultimalinhalabs/ul_platform`, branch de produção `master` (01:25 UTC) |
+| Vercel — push de teste | commit `e573f60` (alteração real ao relatório) empurrado às 01:26:35 → deployment `dpl_B1doB3wHtiH7mfM6XMG9vso3m76A`, `target: production`, origem Git (`master`/`e573f60`), **READY** às 01:27:12 (~25 s) |
+| Vercel — domínio | `api.ultimalinha.ao` passou a apontar para `dpl_B1doB3w…`; `/v1/health` 200, `/v1/health/ready` 200, `/v1/me` sem credenciais 401, `ulk_` forjada 401, `/package.json` 404, CORS permitido ecoado / `evil.example` ausente |
+| Railway — mesmo push | **sem** novo deploy: o worker continua em `a686f577` (`c7dec41`). Causa: `deploymentTriggers` do serviço `worker` = **vazio** (a ligação da fonte fez só o deploy inicial). O código do worker não mudou desde `c7dec41` (os commits seguintes são só documentação/`.gitignore`), por isso o worker em execução está actualizado |
