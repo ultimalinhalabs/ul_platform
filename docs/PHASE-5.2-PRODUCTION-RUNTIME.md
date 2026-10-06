@@ -357,7 +357,7 @@ Nenhum schema, migration, motor de retry ou organização existente foi alterado
 
 ### 18.8 Problemas encontrados
 
-1. Ligação Git da Vercel falhou (GitHub App sem acesso) — deploy pela CLI; pushes para `master` **não** fazem deploy da API.
+1. Ligação Git da Vercel falhou inicialmente (GitHub App sem acesso) — deploy pela CLI. **Resolvido em 2026-10-06** pelo dono: projecto ligado a `ultimalinhalabs/ul_platform`, branch de produção `master` (deploy automático verificado em §18.10).
 2. Railway: 2 deploys falhados por configuração de região (erro meu, corrigido).
 3. `vercel link` alterou o `.gitignore` de forma a anular `!.env.example` (corrigido).
 4. A Railway marca o `railway.json` (config-as-code) como *deprecated*; continua a funcionar até **2026-12-01** — migrar antes dessa data.
