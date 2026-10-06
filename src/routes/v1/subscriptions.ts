@@ -10,7 +10,9 @@ import {
   listOrganizationApplications,
   listSubscriptionsForOrganization,
 } from "../../modules/subscriptions/service.js";
+import { isSelfServicePlan } from "../../modules/subscriptions/selfService.js";
 import { asyncHandler } from "../../shared/asyncHandler.js";
+import { PlanRequiresContractError } from "../../shared/errors.js";
 import { paramString } from "../../shared/params.js";
 import { ok } from "../../shared/response.js";
 
@@ -20,6 +22,10 @@ import { ok } from "../../shared/response.js";
  * including .../applications — that endpoint is a view *derived from*
  * subscriptions, not the global application registry, so it belongs to
  * the same permission as the data it's reading.
+ *
+ * Block 0 — creating a subscription here is self-service, so it is refused
+ * (403 PLAN_REQUIRES_CONTRACT) for every plan not explicitly self-service
+ * (modules/subscriptions/selfService.ts). Cancel and reads are unchanged.
  */
 export const subscriptionsRouter = Router();
 
@@ -30,6 +36,7 @@ subscriptionsRouter.post(
   requirePermission("subscription.manage"),
   asyncHandler(async (req, res) => {
     const body = createSubscriptionSchema.parse(req.body);
+    if (!isSelfServicePlan(body.applicationKey, body.planKey)) throw new PlanRequiresContractError();
     const subscription = await createSubscription({
       organizationId: req.membership!.organizationId,
       ...body,
