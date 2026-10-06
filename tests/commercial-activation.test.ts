@@ -354,6 +354,44 @@ test("concurrency: simultaneous activations produce exactly one set of effects",
   assert.deepEqual(await counts(orgId), { grants: 2, subscriptions: 2, access: 2 });
 });
 
+/** Fails instead of hanging: a starved pool (max 5) never errors on its own. */
+async function withinMs<T>(ms: number, work: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`still running after ${ms} ms (pool starvation?)`)), ms);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function noStuckConnections() {
+  const rows = await db.execute<{ stuck: number }>(sql`select count(*)::int as stuck from pg_stat_activity
+    where datname = current_database() and pid <> pg_backend_pid() and state in ('idle in transaction', 'idle in transaction (aborted)', 'active')`);
+  assert.equal(rows[0]!.stuck, 0, "no connection left inside a transaction or running a query");
+}
+
+test("pool: 6+ simultaneous activations (same contract, and different contracts) all finish; one effect per contract; no stuck connections", async () => {
+  // More concurrent transactions than the pool (max 5): every read made during activation must use the
+  // transaction's own connection, otherwise the holders wait forever for a 6th connection.
+  const same = await pendingContract([NA, QD]);
+  const sameResults = await withinMs(20_000, Promise.all(Array.from({ length: 6 }, () => activate(same.contractId))));
+  assert.equal(sameResults.filter((r) => r.status === 201).length, 1, JSON.stringify(sameResults.map((r) => r.status)));
+  assert.equal(sameResults.filter((r) => r.status === 200).length, 5, "the others get the idempotent result");
+  assert.deepEqual(await counts(same.orgId), { grants: 2, subscriptions: 2, access: 2 });
+  assert.equal((await eventTypes([same.contractId])).filter((t) => t === "contract.activated").length, 1);
+
+  const many = [];
+  for (let i = 0; i < 6; i++) many.push(await pendingContract([NA]));
+  const manyResults = await withinMs(20_000, Promise.all(many.map((c) => activate(c.contractId))));
+  assert.deepEqual(manyResults.map((r) => r.status), [201, 201, 201, 201, 201, 201], JSON.stringify(manyResults.map((r) => r.raw.slice(0, 120))));
+  for (const c of many) assert.deepEqual(await counts(c.orgId), { grants: 1, subscriptions: 1, access: 1 });
+
+  await noStuckConnections();
+});
+
 test("revocation: grant revoked, its subscription canceled and access revoked; contract unchanged; idempotent; audited", async () => {
   const { contractId, orgId, owner } = await pendingContract([NA, QD]);
   const act = await activate(contractId);

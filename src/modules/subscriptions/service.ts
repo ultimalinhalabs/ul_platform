@@ -47,8 +47,11 @@ function shapeSubscription(row: {
   };
 }
 
-async function resolvePlanForSubscription(applicationKey: string, planKey: string) {
-  const [row] = await db
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Block 1D — reads on the executor it is given, so inside a caller's transaction it never takes a second pool connection. */
+async function resolvePlanForSubscription(applicationKey: string, planKey: string, executor: typeof db | Tx = db) {
+  const [row] = await executor
     .select({
       planId: plans.id,
       planStatus: plans.status,
@@ -96,10 +99,11 @@ export async function createSubscription(
     currentPeriodEnd?: Date | null;
   },
   /** Block 1D — the caller's transaction (contract activation); omitted, it opens its own exactly as before. */
-  executor?: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  executor?: Tx,
 ): Promise<typeof subscriptions.$inferSelect> {
-  if (!executor) return db.transaction((tx) => createSubscription(input, tx));
-  const target = await resolvePlanForSubscription(input.applicationKey, input.planKey);
+  // Standalone (no executor): the plan is resolved and validated BEFORE the transaction opens, exactly as before Block 1D.
+  // Inside a caller's transaction every read uses that transaction's connection (no second pool connection).
+  const target = await resolvePlanForSubscription(input.applicationKey, input.planKey, executor ?? db);
 
   if (target.applicationStatus !== "ACTIVE") {
     throw new ConflictError(
@@ -112,7 +116,15 @@ export async function createSubscription(
     );
   }
 
-  const tx = executor;
+  if (!executor) return db.transaction((tx) => insertSubscription(input, target, tx));
+  return insertSubscription(input, target, executor);
+}
+
+async function insertSubscription(
+  input: Parameters<typeof createSubscription>[0],
+  target: Awaited<ReturnType<typeof resolvePlanForSubscription>>,
+  tx: Tx,
+): Promise<typeof subscriptions.$inferSelect> {
   await tx
     .select({ id: organizations.id })
     .from(organizations)
