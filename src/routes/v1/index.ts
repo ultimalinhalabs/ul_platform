@@ -18,6 +18,7 @@ import { serviceScopesRouter } from "./serviceScopes.js";
 import { subscriptionsRouter } from "./subscriptions.js";
 import { usageRouter } from "./usage.js";
 import { webhooksRouter } from "./webhooks.js";
+import { applicationAccessRouter } from "./applicationAccess.js";
 
 export const v1Router = Router();
 
@@ -28,6 +29,7 @@ v1Router.use(organizationsRouter);
 v1Router.use(rolesRouter);
 v1Router.use(permissionsRouter);
 v1Router.use(applicationsRouter);
+v1Router.use(applicationAccessRouter);
 v1Router.use(plansRouter);
 v1Router.use(subscriptionsRouter);
 v1Router.use(entitlementsRouter);

@@ -11,6 +11,10 @@ import {
   listPlatformAdmins,
   updatePlatformAdmin,
 } from "../../modules/platformAdmins/service.js";
+import { z } from "zod";
+import { grantApplicationAccess, revokeApplicationAccess } from "../../modules/applicationAccess/service.js";
+import { setOrganizationStatus } from "../../modules/organizations/service.js";
+import { setUserStatus } from "../../modules/users/service.js";
 import { asyncHandler } from "../../shared/asyncHandler.js";
 import { UnauthorizedError } from "../../shared/errors.js";
 import { paramString } from "../../shared/params.js";
@@ -26,6 +30,55 @@ import { ok } from "../../shared/response.js";
  * OWNER and a PLATFORM_ADMIN, but neither implies the other.
  */
 export const platformRouter = Router();
+
+const organizationStatusSchema = z.object({ status: z.enum(["active", "suspended"]) });
+const userStatusSchema = z.object({ status: z.enum(["active", "disabled"]) });
+
+/** Fase 6 — suspend/reactivate an organization (blocks memberships AND org-scoped service keys). */
+platformRouter.patch(
+  "/platform/organizations/:organizationId/status",
+  authenticate,
+  requirePlatformMembership(),
+  requirePlatformPermission("platform.organization.manage"),
+  asyncHandler(async (req, res) => {
+    const body = organizationStatusSchema.parse(req.body);
+    ok(res, await setOrganizationStatus({ organizationId: paramString(req.params.organizationId)!, status: body.status, actorUserId: req.auth!.userId }));
+  }),
+);
+
+/** Fase 6 — disable/reactivate a platform user (refused by `authenticate` even with a valid session). */
+platformRouter.patch(
+  "/platform/users/:userId/status",
+  authenticate,
+  requirePlatformMembership(),
+  requirePlatformPermission("platform.user.manage"),
+  asyncHandler(async (req, res) => {
+    const body = userStatusSchema.parse(req.body);
+    ok(res, await setUserStatus({ userId: paramString(req.params.userId)!, status: body.status, actorUserId: req.auth!.userId }));
+  }),
+);
+
+/** Fase 6 — grant an organization access to an application (separate from billing). Idempotent. */
+platformRouter.put(
+  "/platform/organizations/:organizationId/applications/:applicationKey/access",
+  authenticate,
+  requirePlatformMembership(),
+  requirePlatformPermission("platform.application_access.manage"),
+  asyncHandler(async (req, res) => {
+    ok(res, await grantApplicationAccess({ organizationId: paramString(req.params.organizationId)!, applicationKey: paramString(req.params.applicationKey)!, actorUserId: req.auth!.userId }));
+  }),
+);
+
+/** Fase 6 — revoke an organization's access to an application (status change, never a delete). */
+platformRouter.delete(
+  "/platform/organizations/:organizationId/applications/:applicationKey/access",
+  authenticate,
+  requirePlatformMembership(),
+  requirePlatformPermission("platform.application_access.manage"),
+  asyncHandler(async (req, res) => {
+    ok(res, await revokeApplicationAccess({ organizationId: paramString(req.params.organizationId)!, applicationKey: paramString(req.params.applicationKey)!, actorUserId: req.auth!.userId }));
+  }),
+);
 
 /**
  * The platform-scope analogue of `GET /v1/me` — any authenticated human

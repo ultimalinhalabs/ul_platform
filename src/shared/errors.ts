@@ -27,6 +27,20 @@ export class ForbiddenError extends AppError {
   }
 }
 
+/** Fase 6 — the platform user is `disabled` (users.status); a valid IdP session is not enough. */
+export class AccountDisabledError extends AppError {
+  constructor(message = "This account is disabled") {
+    super(403, "ACCOUNT_DISABLED", message);
+  }
+}
+
+/** Fase 6 — the organization is `suspended` (organizations.status); normal operation is blocked. */
+export class OrganizationSuspendedError extends AppError {
+  constructor(message = "This organization is suspended") {
+    super(403, "ORGANIZATION_SUSPENDED", message);
+  }
+}
+
 export class NotFoundError extends AppError {
   constructor(message = "Resource not found") {
     super(404, "NOT_FOUND", message);

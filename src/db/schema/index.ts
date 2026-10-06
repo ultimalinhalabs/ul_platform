@@ -20,3 +20,5 @@ export * from "./subscriptions.js";
 export * from "./usage.js";
 export * from "./users.js";
 export * from "./webhooks.js";
+export * from "./applicationRoles.js";
+export * from "./applicationAccess.js";

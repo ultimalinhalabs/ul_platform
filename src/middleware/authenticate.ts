@@ -2,8 +2,9 @@ import type { NextFunction, Request, Response } from "express";
 import { verifySupabaseAccessToken } from "../integrations/supabase/jwt.js";
 import { isApiKeyToken } from "../modules/apiKeys/crypto.js";
 import { verifyApiKeyToken } from "../modules/apiKeys/service.js";
-import { ensureUserExists } from "../modules/users/service.js";
-import { UnauthorizedError } from "../shared/errors.js";
+import { assertOrganizationActive, getOrganizationStatus } from "../modules/organizations/service.js";
+import { ensureUserExists, getUserStatus } from "../modules/users/service.js";
+import { AccountDisabledError, UnauthorizedError } from "../shared/errors.js";
 
 function extractBearerToken(header: string | undefined): string {
   if (!header?.startsWith("Bearer ")) {
@@ -27,6 +28,10 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
 
     if (isApiKeyToken(token)) {
       req.service = await verifyApiKeyToken(token);
+      // Fase 6 — an organization-scoped credential stops working while its organization is suspended.
+      if (req.service.organizationId) {
+        assertOrganizationActive(await getOrganizationStatus(req.service.organizationId));
+      }
       return next();
     }
 
@@ -35,6 +40,11 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
     });
 
     await ensureUserExists({ id: claims.sub, email: claims.email });
+
+    // Fase 6 — the platform, not the IdP, decides whether this identity may operate.
+    if ((await getUserStatus(claims.sub)) === "disabled") {
+      throw new AccountDisabledError();
+    }
 
     req.auth = { userId: claims.sub, email: claims.email };
     next();
