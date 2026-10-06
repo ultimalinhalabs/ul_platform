@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { findActiveMembership } from "../modules/memberships/service.js";
+import { assertOrganizationActive } from "../modules/organizations/service.js";
 import { ForbiddenError, UnauthorizedError } from "../shared/errors.js";
 import { paramString } from "../shared/params.js";
 
@@ -25,6 +26,7 @@ export function requireOrganizationMembership(paramName = "organizationId") {
       if (!membership) {
         throw new ForbiddenError("No active membership in this organization");
       }
+      assertOrganizationActive(membership.organizationStatus);
 
       req.membership = {
         organizationId,

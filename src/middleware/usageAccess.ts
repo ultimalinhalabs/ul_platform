@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { findActiveMembership } from "../modules/memberships/service.js";
+import { assertOrganizationActive } from "../modules/organizations/service.js";
 import { roleHasPermission } from "../modules/authorization/service.js";
 import { ForbiddenError, UnauthorizedError } from "../shared/errors.js";
 import { paramString } from "../shared/params.js";
@@ -39,6 +40,7 @@ export async function requireUsageReadAccess(req: Request, _res: Response, next:
 
     const membership = await findActiveMembership(req.auth.userId, organizationId);
     if (!membership) throw new ForbiddenError("No active membership in this organization");
+    assertOrganizationActive(membership.organizationStatus);
 
     const allowed = await roleHasPermission(membership.roleId, "usage.read");
     if (!allowed) throw new ForbiddenError("Missing permission: usage.read");

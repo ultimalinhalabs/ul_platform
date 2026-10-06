@@ -1,4 +1,5 @@
-import { pgTable, text, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { check, pgTable, text, uuid } from "drizzle-orm/pg-core";
 import { timestamps } from "./_helpers.js";
 
 /**
@@ -13,5 +14,13 @@ import { timestamps } from "./_helpers.js";
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
   email: text("email").notNull(),
+  /**
+   * Fase 6. A `disabled` user is refused by `authenticate` even with a
+   * valid Supabase session — the platform, not the IdP, decides whether an
+   * identity may operate.
+   */
+  status: text("status", { enum: ["active", "disabled"] })
+    .notNull()
+    .default("active"),
   ...timestamps,
-});
+}, (table) => [check("users_status_check", sql`${table.status} in ('active', 'disabled')`)]);

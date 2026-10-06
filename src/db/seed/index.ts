@@ -4,6 +4,7 @@ import { db } from "../index.js";
 import { validateEndpointUrl } from "../../modules/endpoints/validation.js";
 import {
   applicationEndpoints,
+  applicationRoles,
   applicationEnvironments,
   applicationIntegrations,
   applicationMeters,
@@ -22,6 +23,7 @@ import {
 } from "../schema/index.js";
 import {
   APPLICATION_ENDPOINTS,
+  APPLICATION_ROLES,
   APPLICATION_ENVIRONMENTS,
   APPLICATION_INTEGRATIONS,
   APPLICATION_METERS,
@@ -305,8 +307,25 @@ export async function seed() {
         });
     }
 
+    // Fase 6 — each application's own role catalog (also inserted by migration 0013).
+    const applicationRoleRows = Object.entries(APPLICATION_ROLES).flatMap(([applicationKey, roleDefs]) => {
+      const applicationId = appIdByKey.get(applicationKey);
+      if (!applicationId) throw new Error(`Seed data references unknown application: ${applicationKey}`);
+      return roleDefs.map((r) => ({ applicationId, key: r.key, name: r.name, description: r.description }));
+    });
+    if (applicationRoleRows.length > 0) {
+      await tx
+        .insert(applicationRoles)
+        .values(applicationRoleRows)
+        .onConflictDoUpdate({
+          target: [applicationRoles.applicationId, applicationRoles.key],
+          set: { name: sql`excluded.name`, description: sql`excluded.description`, updatedAt: sql`now()` },
+        });
+    }
+
     return {
       applications: appRows.length,
+      applicationRoles: applicationRoleRows.length,
       permissions: permRows.length,
       roles: roleRows.length,
       rolePermissions: rolePermissionRows.length,

@@ -12,9 +12,12 @@ export async function findActiveMembership(userId: string, organizationId: strin
       membershipId: memberships.id,
       roleId: memberships.roleId,
       roleKey: roles.key,
+      // Fase 6 — callers must refuse a suspended organization (assertOrganizationActive).
+      organizationStatus: organizations.status,
     })
     .from(memberships)
     .innerJoin(roles, eq(roles.id, memberships.roleId))
+    .innerJoin(organizations, eq(organizations.id, memberships.organizationId))
     .where(
       and(
         eq(memberships.userId, userId),
@@ -33,6 +36,8 @@ export async function listMembershipsForUser(userId: string) {
       membershipId: memberships.id,
       organizationId: memberships.organizationId,
       organizationName: organizations.name,
+      organizationSlug: organizations.slug,
+      organizationStatus: organizations.status,
       roleKey: roles.key,
       status: memberships.status,
     })

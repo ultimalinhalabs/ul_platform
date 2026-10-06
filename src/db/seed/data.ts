@@ -206,6 +206,10 @@ export const PLATFORM_PERMISSIONS = [
     description: "View platform-level (organizationId = null) API key metadata — never secrets.",
   },
   { key: "platform.credential.manage", description: "Issue/revoke platform-level (organizationId = null) API keys." },
+  // Fase 6 — also inserted by migrations 0012/0014 so production gets them without a re-seed.
+  { key: "platform.organization.manage", description: "Suspend/reactivate organizations (organizations.status)." },
+  { key: "platform.user.manage", description: "Disable/reactivate platform users (users.status)." },
+  { key: "platform.application_access.manage", description: "Grant/revoke an organization's access to an application (separate from billing)." },
 ] as const;
 
 export const PLATFORM_ROLE_PERMISSIONS: Record<(typeof PLATFORM_ROLES)[number]["key"], string[]> = {
@@ -306,4 +310,24 @@ export const ROLE_PERMISSIONS: Record<(typeof ROLES)[number]["key"], string[]> =
     "usage.read",
   ],
   STAFF: ["organization.read", "membership.read"],
+};
+
+/**
+ * Fase 6 — each application's own role catalog (also inserted by migration
+ * 0013). An additional layer on top of the organization ROLES, never a
+ * replacement; see modules/applicationRoles/effectiveRole.ts for the
+ * provisional fallback from organization role to application role.
+ */
+export const APPLICATION_ROLES: Record<string, { key: string; name: string; description: string }[]> = {
+  QUALE_A_DICA: [
+    { key: "OWNER", name: "Owner", description: "Full control of the organization inside Qualé a Dica." },
+    { key: "ADMIN", name: "Admin", description: "Manages channels, automation and agents inside Qualé a Dica." },
+    { key: "AGENT", name: "Agent", description: "Handles conversations inside Qualé a Dica." },
+  ],
+  NA_PISTA: [
+    { key: "OWNER", name: "Owner", description: "Full control of the organization inside Na Pista." },
+    { key: "ADMIN", name: "Admin", description: "Manages the catalog and operations inside Na Pista." },
+    { key: "MANAGER", name: "Manager", description: "Operational management inside Na Pista." },
+    { key: "STAFF", name: "Staff", description: "Baseline operational access inside Na Pista." },
+  ],
 };

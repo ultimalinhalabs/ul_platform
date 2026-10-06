@@ -4,7 +4,7 @@ import { db } from "../../db/index.js";
 import { memberships, organizations } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
 import { getRoleByKey } from "../roles/service.js";
-import { NotFoundError } from "../../shared/errors.js";
+import { NotFoundError, OrganizationSuspendedError } from "../../shared/errors.js";
 
 function slugify(name: string): string {
   const base = name
@@ -56,6 +56,52 @@ export async function createOrganization(input: { name: string; slug?: string; c
 
     return organization;
   });
+}
+
+/**
+ * Fase 6 — the single rule for "may this organization operate": a
+ * `suspended` organization blocks every membership-scoped route and every
+ * organization-scoped service credential.
+ */
+export function assertOrganizationActive(status: "active" | "suspended" | null | undefined): void {
+  if (status === "suspended") throw new OrganizationSuspendedError();
+}
+
+export async function getOrganizationStatus(organizationId: string): Promise<"active" | "suspended" | null> {
+  const [row] = await db
+    .select({ status: organizations.status })
+    .from(organizations)
+    .where(eq(organizations.id, organizationId))
+    .limit(1);
+  return row?.status ?? null;
+}
+
+/** Fase 6 — platform-admin operation: suspend or reactivate an organization (audited). */
+export async function setOrganizationStatus(input: {
+  organizationId: string;
+  status: "active" | "suspended";
+  actorUserId: string;
+}) {
+  const [current] = await db
+    .select({ status: organizations.status })
+    .from(organizations)
+    .where(eq(organizations.id, input.organizationId))
+    .limit(1);
+  if (!current) throw new NotFoundError("Organization not found");
+  const [updated] = await db
+    .update(organizations)
+    .set({ status: input.status, updatedAt: new Date() })
+    .where(eq(organizations.id, input.organizationId))
+    .returning({ id: organizations.id, status: organizations.status });
+  await recordAuditEvent({
+    actorUserId: input.actorUserId,
+    organizationId: input.organizationId,
+    action: input.status === "suspended" ? "organization.suspended" : "organization.reactivated",
+    targetType: "organization",
+    targetId: input.organizationId,
+    metadata: { previousStatus: current.status, status: input.status },
+  });
+  return updated!;
 }
 
 export async function getOrganizationById(organizationId: string) {
