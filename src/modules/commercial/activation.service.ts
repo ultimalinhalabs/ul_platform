@@ -15,6 +15,7 @@ import {
 import { AppError, ConflictError, NotFoundError, OrganizationSuspendedError } from "../../shared/errors.js";
 import { grantApplicationAccess, revokeApplicationAccess } from "../applicationAccess/service.js";
 import { recordAuditEvent } from "../audit/service.js";
+import { requestInitialProvisioningInTx } from "../integrationProvisioning/service.js";
 import { cancelSubscription, createSubscription } from "../subscriptions/service.js";
 import { canonicalize } from "./canonicalJson.js";
 import { type CommercialActor, recordCommercialEvent } from "./events.js";
@@ -249,6 +250,15 @@ export async function activateContract(contractId: string, actor: CommercialActo
         .update(entitlementGrants)
         .set({ status: "active", activatedAt: startsAt, activatedBy: actor.userId, subscriptionId: subscription.id, applicationAccessId: access.id, updatedAt: sql`now()` })
         .where(eq(entitlementGrants.id, grant!.id));
+      // D2-B — an application with a managed integration (Na Pista) gets its provisioning request in the same transaction.
+      await requestInitialProvisioningInTx(tx, {
+        organizationId: contract.organizationId,
+        applicationId: application.id,
+        applicationKey: application.key,
+        contractId: contract.id,
+        entitlementGrantId: grant!.id,
+        actorUserId: actor.userId,
+      });
       await recordCommercialEvent(tx, {
         ...base,
         aggregateType: "entitlement_grant",

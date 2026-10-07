@@ -25,6 +25,11 @@ export interface ServiceAuthContext {
   organizationId: string | null;
   /** Persisted grants only — see modules/serviceScopes/service.ts. Never re-derived from anything client-supplied on this request. */
   scopes: string[];
+  /** D2-B — structural class/purpose/status of the credential, read from its row. */
+  credentialClass: "ORGANIZATION" | "INTEGRATION_MANAGED" | "PLATFORM_SERVICE";
+  purpose: string | null;
+  status: "ACTIVE" | "PENDING";
+  provisioningRequestId: string | null;
 }
 
 /**

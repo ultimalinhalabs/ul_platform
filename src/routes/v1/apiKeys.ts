@@ -5,7 +5,7 @@ import { requirePermission } from "../../middleware/requirePermission.js";
 import { requirePlatformMembership } from "../../middleware/platformContext.js";
 import { rateLimit } from "../../middleware/rateLimit.js";
 import { requirePlatformPermission } from "../../middleware/requirePlatformPermission.js";
-import { createApiKeySchema } from "../../modules/apiKeys/schemas.js";
+import { createApiKeySchema, createPlatformApiKeySchema } from "../../modules/apiKeys/schemas.js";
 import {
   createOrganizationApiKey,
   createPlatformApiKey,
@@ -103,11 +103,12 @@ apiKeysRouter.post(
   requirePlatformMembership(),
   requirePlatformPermission("platform.credential.manage"),
   asyncHandler(async (req, res) => {
-    const body = createApiKeySchema.parse(req.body);
+    const body = createPlatformApiKeySchema.parse(req.body);
     const apiKey = await createPlatformApiKey({
       applicationKey: body.applicationKey,
       expiresAt: body.expiresAt,
       scopes: body.scopes,
+      purpose: body.purpose,
       actorUserId: req.auth!.userId,
     });
     // secret is present in this one response only — never again
