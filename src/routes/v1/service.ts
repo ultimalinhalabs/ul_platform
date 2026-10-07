@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { authenticate } from "../../middleware/authenticate.js";
+import { authenticate, authenticateAllowingPending } from "../../middleware/authenticate.js";
 import { rateLimit } from "../../middleware/rateLimit.js";
 import { discoverQuerySchema } from "../../modules/discovery/schemas.js";
 import { discoverService } from "../../modules/discovery/service.js";
@@ -17,7 +17,10 @@ export const serviceRouter = Router();
 
 serviceRouter.get(
   "/service/me",
-  authenticate,
+  // D2-B — introspection is one of the two operations a PENDING managed credential may perform
+  // (the product verifies what it received before storing it); every other credential is subject
+  // to the full runtime authorization, exactly as on any other route.
+  authenticateAllowingPending,
   asyncHandler(async (req, res) => {
     if (!req.service) throw new ForbiddenError("This endpoint requires a service credential");
 
@@ -26,6 +29,10 @@ serviceRouter.get(
       application: req.service.applicationKey,
       organizationId: req.service.organizationId,
       scopes: req.service.scopes,
+      credentialClass: req.service.credentialClass,
+      purpose: req.service.purpose,
+      status: req.service.status,
+      provisioningRequestId: req.service.provisioningRequestId,
     });
   }),
 );

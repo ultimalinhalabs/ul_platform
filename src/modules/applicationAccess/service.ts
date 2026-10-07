@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { applications, organizationApplicationAccess, organizations } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
+import { endProvisioningForAccessLossInTx } from "../integrationProvisioning/service.js";
 import { ACCESS_NOT_EXPIRED_BY_GRANT } from "../entitlements/effectiveness.js";
 import { ConflictError, NotFoundError } from "../../shared/errors.js";
 
@@ -30,7 +31,8 @@ async function resolveOrganizationAndApplication(organizationId: string, applica
 }
 
 /** Block 1D — runs inside a caller's transaction (contract activation) when one is given; omitted, behaviour is unchanged. */
-type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type Executor = typeof db | Tx;
 
 /** Idempotent: grants (or re-activates) access. Platform-admin operation. */
 export async function grantApplicationAccess(input: { organizationId: string; applicationKey: string; actorUserId: string }, executor: Executor = db) {
@@ -62,7 +64,12 @@ export async function grantApplicationAccess(input: { organizationId: string; ap
 }
 
 /** Revocation is a status change, never a delete. */
-export async function revokeApplicationAccess(input: { organizationId: string; applicationKey: string; actorUserId: string }, executor: Executor = db) {
+export async function revokeApplicationAccess(
+  input: { organizationId: string; applicationKey: string; actorUserId: string },
+  executor: Executor = db,
+): Promise<{ id: string; organizationId: string; applicationKey: string; status: string }> {
+  // D2-B — the access revocation and the end of the integration's managed credential are one atomic operation.
+  if (executor === db) return db.transaction((tx) => revokeApplicationAccess(input, tx));
   const { organizationId, application } = await resolveOrganizationAndApplication(input.organizationId, input.applicationKey, executor);
   const [row] = await executor
     .update(organizationApplicationAccess)
@@ -85,6 +92,7 @@ export async function revokeApplicationAccess(input: { organizationId: string; a
     targetId: organizationId,
     metadata: { applicationKey: application.key },
   }, executor);
+  await endProvisioningForAccessLossInTx(executor as Tx, organizationId, application.id, input.actorUserId, "access_revoked");
   return { id: row.id, organizationId, applicationKey: application.key, status: row.status };
 }
 

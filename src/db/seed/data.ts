@@ -60,6 +60,8 @@ export const SERVICE_SCOPES = [
   { key: "payment.create", description: "Create a payment." },
   { key: "payment.read", description: "Read payment data." },
   { key: "report.generate", description: "Generate a report." },
+  // D2-B — provisioner-only: valid solely on a PLATFORM_SERVICE credential with purpose PROVISIONER (modules/apiKeys/service.ts).
+  { key: "credential.provision", description: "Issue integration credentials for open provisioning requests of the credential's own application (provisioner only)." },
 ] as const;
 
 /**
@@ -73,7 +75,7 @@ export const SERVICE_SCOPES = [
  * never subscribe to or issue integration credentials for.
  */
 export const APPLICATION_SERVICE_SCOPES: Record<string, string[]> = {
-  NA_PISTA: ["event.publish", "usage.write", "usage.read", "catalog.read", "catalog.write", "customer.read"],
+  NA_PISTA: ["event.publish", "usage.write", "usage.read", "catalog.read", "catalog.write", "customer.read", "credential.provision"],
   MICHA_EXPRESS: ["event.publish", "usage.write", "usage.read", "payment.create", "payment.read"],
   FOI: ["event.publish", "usage.write", "usage.read", "catalog.read"],
   QUALE_A_DICA: ["event.publish", "usage.write", "usage.read", "catalog.read", "report.generate"],

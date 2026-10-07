@@ -18,6 +18,9 @@ import { requirePermission } from "../src/middleware/requirePermission.js";
 import { ForbiddenError, UnauthorizedError, ValidationError } from "../src/shared/errors.js";
 import { createTestOrganization, createTestUser, deleteTestOrganization, deleteTestUser, grantTestApplicationAccess } from "./helpers.js";
 
+/** D2-B — fields every authenticated service context now carries; these fakes model an ordinary ORGANIZATION key. */
+const ORG_CREDENTIAL = { credentialClass: "ORGANIZATION" as const, purpose: null, status: "ACTIVE" as const, provisioningRequestId: null };
+
 after(() => queryClient.end());
 
 async function getApplicationId(key: string): Promise<string> {
@@ -245,7 +248,7 @@ test("an expired API key's granted scopes can no longer authenticate at all", as
 });
 
 test("requireServiceScope lets a request through when the credential holds the scope", () => {
-  const req = fakeReq({ service: { apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "o1", scopes: ["catalog.read"] } });
+  const req = fakeReq({ service: { ...ORG_CREDENTIAL, apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "o1", scopes: ["catalog.read"] } });
   const captured = captureNext();
   requireServiceScope("catalog.read")(req, {} as Response, captured.next);
   assert.equal(captured.called, true);
@@ -253,7 +256,7 @@ test("requireServiceScope lets a request through when the credential holds the s
 });
 
 test("requireServiceScope rejects a request whose credential lacks the scope", () => {
-  const req = fakeReq({ service: { apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "o1", scopes: ["catalog.read"] } });
+  const req = fakeReq({ service: { ...ORG_CREDENTIAL, apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "o1", scopes: ["catalog.read"] } });
   const captured = captureNext();
   requireServiceScope("catalog.write")(req, {} as Response, captured.next);
   assert.ok(captured.error instanceof ForbiddenError);
@@ -267,7 +270,7 @@ test("requireServiceScope rejects a human request outright — human and service
 });
 
 test("requirePermission rejects a service credential outright — it has no membership to check a permission against", async () => {
-  const req = fakeReq({ service: { apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "o1", scopes: [] } });
+  const req = fakeReq({ service: { ...ORG_CREDENTIAL, apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "o1", scopes: [] } });
   const captured = captureNext();
   await requirePermission("organization.read")(req, {} as Response, captured.next);
   assert.ok(captured.error instanceof UnauthorizedError);
@@ -275,7 +278,7 @@ test("requirePermission rejects a service credential outright — it has no memb
 
 test("requireServiceOrganizationMatch allows a credential to act only in its own stored organization", () => {
   const req = fakeReq({
-    service: { apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "org-a", scopes: [] },
+    service: { ...ORG_CREDENTIAL, apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "org-a", scopes: [] },
     params: { organizationId: "org-a" },
   });
   const captured = captureNext();
@@ -285,7 +288,7 @@ test("requireServiceOrganizationMatch allows a credential to act only in its own
 
 test("requireServiceOrganizationMatch rejects a credential used against a different organization's route", () => {
   const req = fakeReq({
-    service: { apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "org-a", scopes: [] },
+    service: { ...ORG_CREDENTIAL, apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "org-a", scopes: [] },
     params: { organizationId: "org-b" },
   });
   const captured = captureNext();

@@ -141,6 +141,13 @@
       "when": 1791285745087,
       "tag": "0019_entitlement_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1791393344444,
+      "tag": "0020_managed_credential_provisioning",
+      "breakpoints": true
     }
   ]
 }

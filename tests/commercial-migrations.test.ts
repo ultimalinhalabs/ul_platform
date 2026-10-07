@@ -104,13 +104,14 @@ after(async () => {
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
 });
 
-test("the journal continues at 0015 and ends at 0019 without touching 0000–0014", () => {
+test("the journal continues at 0015, keeps 0015–0019 unchanged and only appends after them (D2-B: 0020)", () => {
   const journal = JSON.parse(readFileSync("drizzle/migrations/meta/_journal.json", "utf8")).entries as Array<{ idx: number; tag: string }>;
   assert.deepEqual(
-    journal.slice(15).map((e) => e.tag),
+    journal.slice(15, 20).map((e) => e.tag),
     ["0015_commercial_permissions", "0016_commercial_events_and_terms", "0017_proposals", "0018_acceptances_and_contracts", "0019_entitlement_grants"],
   );
   assert.equal(journal[14]!.tag, "0014_organization_application_access");
+  assert.deepEqual(journal.slice(20).map((e) => e.tag), ["0020_managed_credential_provisioning"]);
 });
 
 test("from zero and in sequence (0014 → Supabase-like default grants → 0019) produce the same schema; zero anon/authenticated grants", async () => {
@@ -156,7 +157,7 @@ test("re-running the migrator is a no-op (replay/idempotency)", async () => {
     assert.equal(after!.n, before!.n);
     assert.equal(String(after!.last), String(before!.last));
     assert.equal(await schemaSignature(DB_ZERO), signatureBefore);
-    assert.equal(before!.n, 20);
+    assert.equal(before!.n, 21);
   } finally {
     await sql.end();
   }

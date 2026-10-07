@@ -31,6 +31,16 @@ export async function recordAuditEvent(
   }
 }
 
+/**
+ * D2-B — the strict variant for events whose absence would be a security gap
+ * (integration credential issuance/confirmation/revocation): always written
+ * inside the caller's transaction and NEVER swallowed — if the audit row
+ * cannot be written, the operation it describes does not happen either.
+ */
+export async function recordAuditEventStrict(entry: AuditEntry, executor: Pick<typeof db, "insert">): Promise<void> {
+  await executor.insert(auditLogs).values(entry);
+}
+
 export interface PlatformAuditLogEntry {
   id: string;
   actorUserId: string | null;

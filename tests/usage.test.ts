@@ -20,6 +20,9 @@ import {
 import { ForbiddenError, NotFoundError, UnauthorizedError } from "../src/shared/errors.js";
 import { createTestOrganization, createTestUser, deleteTestOrganization, deleteTestUser } from "./helpers.js";
 
+/** D2-B — fields every authenticated service context now carries; these fakes model an ordinary ORGANIZATION key. */
+const ORG_CREDENTIAL = { credentialClass: "ORGANIZATION" as const, purpose: null, status: "ACTIVE" as const, provisioningRequestId: null };
+
 after(() => queryClient.end());
 
 function fakeReq(overrides: Partial<Request>): Request {
@@ -248,7 +251,7 @@ test("concurrent duplicate submissions resolve to exactly one persisted row", as
 
 test("requireServiceApplicationMatch allows a credential to act only for its own application", () => {
   const req = fakeReq({
-    service: { apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "o1", scopes: [] },
+    service: { ...ORG_CREDENTIAL, apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "o1", scopes: [] },
     params: { applicationKey: "NA_PISTA" },
   });
   const captured = captureNext();
@@ -258,7 +261,7 @@ test("requireServiceApplicationMatch allows a credential to act only for its own
 
 test("requireServiceApplicationMatch rejects a credential used against a different application's route", () => {
   const req = fakeReq({
-    service: { apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "o1", scopes: [] },
+    service: { ...ORG_CREDENTIAL, apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "o1", scopes: [] },
     params: { applicationKey: "MICHA_EXPRESS" },
   });
   const captured = captureNext();
@@ -268,7 +271,7 @@ test("requireServiceApplicationMatch rejects a credential used against a differe
 
 test("requireUsageReadAccess allows a service credential with usage.read scoped to the right org+app", () => {
   const req = fakeReq({
-    service: {
+    service: { ...ORG_CREDENTIAL,
       apiKeyId: "k1",
       applicationId: "a1",
       applicationKey: "NA_PISTA",
@@ -284,7 +287,7 @@ test("requireUsageReadAccess allows a service credential with usage.read scoped 
 
 test("requireUsageReadAccess rejects a service credential missing usage.read even if org+app match", () => {
   const req = fakeReq({
-    service: { apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "org-a", scopes: [] },
+    service: { ...ORG_CREDENTIAL, apiKeyId: "k1", applicationId: "a1", applicationKey: "NA_PISTA", organizationId: "org-a", scopes: [] },
     params: { organizationId: "org-a", applicationKey: "NA_PISTA" },
   });
   const captured = captureNext();
@@ -294,7 +297,7 @@ test("requireUsageReadAccess rejects a service credential missing usage.read eve
 
 test("requireUsageReadAccess rejects a service credential scoped to a different organization", () => {
   const req = fakeReq({
-    service: {
+    service: { ...ORG_CREDENTIAL,
       apiKeyId: "k1",
       applicationId: "a1",
       applicationKey: "NA_PISTA",

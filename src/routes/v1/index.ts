@@ -22,6 +22,7 @@ import { applicationAccessRouter } from "./applicationAccess.js";
 import { clientCommercialRouter } from "./clientCommercial.js";
 import { commercialRouter } from "./commercial.js";
 import { publicProposalsRouter } from "./publicProposals.js";
+import { credentialProvisioningRouter } from "./credentialProvisioning.js";
 
 export const v1Router = Router();
 
@@ -48,3 +49,4 @@ v1Router.use(platformRouter);
 v1Router.use(commercialRouter);
 v1Router.use(publicProposalsRouter);
 v1Router.use(clientCommercialRouter);
+v1Router.use(credentialProvisioningRouter);
