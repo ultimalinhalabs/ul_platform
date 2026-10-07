@@ -1,6 +1,12 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
-import { AppError, isUniqueViolationError } from "../shared/errors.js";
+import {
+  AppError,
+  isCheckViolationError,
+  isCommercialImmutableError,
+  isForeignKeyViolationError,
+  isUniqueViolationError,
+} from "../shared/errors.js";
 import { logger } from "../shared/logger.js";
 import { fail } from "../shared/response.js";
 
@@ -52,6 +58,27 @@ export function errorHandler(error: unknown, req: Request, res: Response, _next:
       path: req.path,
     });
     return fail(res, 409, "CONFLICT", "Resource already exists");
+  }
+
+  // Block 1B — database-enforced commercial invariants (migrations 0016–0019)
+  // and integrity rules: previously these surfaced as 500s. They are expected,
+  // client-caused conflicts with the current state, never server faults.
+  const databaseConflict = isCommercialImmutableError(error)
+    ? { code: "COMMERCIAL_RECORD_IMMUTABLE", message: "This commercial record can no longer be changed" }
+    : isCheckViolationError(error)
+      ? { code: "CONFLICT", message: "The request conflicts with a business rule" }
+      : isForeignKeyViolationError(error)
+        ? { code: "CONFLICT", message: "The resource is referenced by other records" }
+        : null;
+  if (databaseConflict) {
+    logger.info("request failed", {
+      requestId: req.requestId,
+      event: "http.request.error",
+      errorCode: databaseConflict.code,
+      status: 409,
+      path: req.path,
+    });
+    return fail(res, 409, databaseConflict.code, databaseConflict.message);
   }
 
   // An unexpected failure — the one case that's genuinely error-level. The

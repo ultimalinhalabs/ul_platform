@@ -22,40 +22,44 @@ function slugify(name: string): string {
  * organization exists. Any authenticated user may call this; they become
  * the new organization's OWNER atomically with its creation.
  */
-export async function createOrganization(input: { name: string; slug?: string; createdBy: string }) {
-  return db.transaction(async (tx) => {
-    const ownerRole = await getRoleByKey("OWNER", tx);
+export async function createOrganization(
+  input: { name: string; slug?: string; createdBy: string },
+  /** Block 1C — run inside the caller's transaction (proposal acceptance); omitted, it opens its own exactly as before. */
+  executor?: Parameters<Parameters<typeof db.transaction>[0]>[0],
+): Promise<typeof organizations.$inferSelect> {
+  if (!executor) return db.transaction((tx) => createOrganization(input, tx));
+  const tx = executor;
+  const ownerRole = await getRoleByKey("OWNER", tx);
 
-    const [organization] = await tx
-      .insert(organizations)
-      .values({
-        name: input.name,
-        slug: input.slug ?? slugify(input.name),
-        createdBy: input.createdBy,
-      })
-      .returning();
-    if (!organization) throw new Error("Failed to create organization");
+  const [organization] = await tx
+    .insert(organizations)
+    .values({
+      name: input.name,
+      slug: input.slug ?? slugify(input.name),
+      createdBy: input.createdBy,
+    })
+    .returning();
+  if (!organization) throw new Error("Failed to create organization");
 
-    await tx.insert(memberships).values({
-      userId: input.createdBy,
-      organizationId: organization.id,
-      roleId: ownerRole.id,
-      status: "active",
-    });
-
-    await recordAuditEvent(
-      {
-        actorUserId: input.createdBy,
-        organizationId: organization.id,
-        action: "organization.created",
-        targetType: "organization",
-        targetId: organization.id,
-      },
-      tx,
-    );
-
-    return organization;
+  await tx.insert(memberships).values({
+    userId: input.createdBy,
+    organizationId: organization.id,
+    roleId: ownerRole.id,
+    status: "active",
   });
+
+  await recordAuditEvent(
+    {
+      actorUserId: input.createdBy,
+      organizationId: organization.id,
+      action: "organization.created",
+      targetType: "organization",
+      targetId: organization.id,
+    },
+    tx,
+  );
+
+  return organization;
 }
 
 /**

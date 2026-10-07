@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { applications, organizationApplicationAccess, organizations } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
+import { ACCESS_NOT_EXPIRED_BY_GRANT } from "../entitlements/effectiveness.js";
 import { ConflictError, NotFoundError } from "../../shared/errors.js";
 
 /**
@@ -11,14 +12,15 @@ import { ConflictError, NotFoundError } from "../../shared/errors.js";
  * (the commercial layer — subscriptions/plans/entitlements — is Fase 7).
  */
 
-async function resolveOrganizationAndApplication(organizationId: string, applicationKey: string) {
-  const [organization] = await db
+/** Block 1D — reads on the executor it is given, so inside a caller's transaction it never takes a second pool connection. */
+async function resolveOrganizationAndApplication(organizationId: string, applicationKey: string, executor: Executor = db) {
+  const [organization] = await executor
     .select({ id: organizations.id, status: organizations.status })
     .from(organizations)
     .where(eq(organizations.id, organizationId))
     .limit(1);
   if (!organization) throw new NotFoundError("Organization not found");
-  const [application] = await db
+  const [application] = await executor
     .select({ id: applications.id, key: applications.key, status: applications.status })
     .from(applications)
     .where(eq(applications.key, applicationKey))
@@ -27,15 +29,19 @@ async function resolveOrganizationAndApplication(organizationId: string, applica
   return { organizationId: organization.id, organizationStatus: organization.status, application };
 }
 
+/** Block 1D — runs inside a caller's transaction (contract activation) when one is given; omitted, behaviour is unchanged. */
+type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 /** Idempotent: grants (or re-activates) access. Platform-admin operation. */
-export async function grantApplicationAccess(input: { organizationId: string; applicationKey: string; actorUserId: string }) {
+export async function grantApplicationAccess(input: { organizationId: string; applicationKey: string; actorUserId: string }, executor: Executor = db) {
   const { organizationId, organizationStatus, application } = await resolveOrganizationAndApplication(
     input.organizationId,
     input.applicationKey,
+    executor,
   );
   if (organizationStatus !== "active") throw new ConflictError("Cannot grant application access to a suspended organization");
   if (application.status !== "ACTIVE") throw new ConflictError(`Application ${application.key} is not active`);
-  const [row] = await db
+  const [row] = await executor
     .insert(organizationApplicationAccess)
     .values({ organizationId, applicationId: application.id, status: "active", grantedBy: input.actorUserId })
     .onConflictDoUpdate({
@@ -51,14 +57,14 @@ export async function grantApplicationAccess(input: { organizationId: string; ap
     targetType: "organization",
     targetId: organizationId,
     metadata: { applicationKey: application.key },
-  });
-  return { organizationId, applicationKey: application.key, status: row!.status };
+  }, executor);
+  return { id: row!.id, organizationId, applicationKey: application.key, status: row!.status };
 }
 
 /** Revocation is a status change, never a delete. */
-export async function revokeApplicationAccess(input: { organizationId: string; applicationKey: string; actorUserId: string }) {
-  const { organizationId, application } = await resolveOrganizationAndApplication(input.organizationId, input.applicationKey);
-  const [row] = await db
+export async function revokeApplicationAccess(input: { organizationId: string; applicationKey: string; actorUserId: string }, executor: Executor = db) {
+  const { organizationId, application } = await resolveOrganizationAndApplication(input.organizationId, input.applicationKey, executor);
+  const [row] = await executor
     .update(organizationApplicationAccess)
     .set({ status: "revoked", revokedAt: sql`now()`, updatedAt: sql`now()` })
     .where(
@@ -78,8 +84,8 @@ export async function revokeApplicationAccess(input: { organizationId: string; a
     targetType: "organization",
     targetId: organizationId,
     metadata: { applicationKey: application.key },
-  });
-  return { organizationId, applicationKey: application.key, status: row.status };
+  }, executor);
+  return { id: row.id, organizationId, applicationKey: application.key, status: row.status };
 }
 
 export async function listApplicationAccessForOrganization(organizationId: string) {
@@ -110,6 +116,7 @@ export async function getActiveApplicationKeys(organizationIds: string[]) {
         inArray(organizationApplicationAccess.organizationId, organizationIds),
         eq(organizationApplicationAccess.status, "active"),
         eq(applications.status, "ACTIVE"),
+        ACCESS_NOT_EXPIRED_BY_GRANT, // Block 1D — a contractual access ends with its grant, even before housekeeping runs
       ),
     );
   for (const row of rows) {

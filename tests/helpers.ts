@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "../src/db/index.js";
-import { organizations, users } from "../src/db/schema/index.js";
+import { applications, organizationApplicationAccess, organizations, users } from "../src/db/schema/index.js";
 
 export async function createTestUser(emailPrefix: string) {
   const id = randomUUID();
@@ -27,4 +27,16 @@ export async function deleteTestUser(userId: string) {
 
 export async function deleteTestOrganization(organizationId: string) {
   await db.delete(organizations).where(eq(organizations.id, organizationId));
+}
+
+/**
+ * Block 1D (G6) — organization API keys require the organization's active access to the application.
+ * Test setup grants it directly (no audit noise); the row is removed with the organization (FK cascade).
+ */
+export async function grantTestApplicationAccess(organizationId: string, applicationKey: string) {
+  const [application] = await db.select({ id: applications.id }).from(applications).where(eq(applications.key, applicationKey));
+  await db
+    .insert(organizationApplicationAccess)
+    .values({ organizationId, applicationId: application!.id, status: "active" })
+    .onConflictDoUpdate({ target: [organizationApplicationAccess.organizationId, organizationApplicationAccess.applicationId], set: { status: "active", revokedAt: null } });
 }

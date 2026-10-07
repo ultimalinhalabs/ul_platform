@@ -12,7 +12,8 @@ import {
 } from "../../modules/subscriptions/service.js";
 import { isSelfServicePlan } from "../../modules/subscriptions/selfService.js";
 import { asyncHandler } from "../../shared/asyncHandler.js";
-import { PlanRequiresContractError } from "../../shared/errors.js";
+import { AppError, PlanRequiresContractError } from "../../shared/errors.js";
+import { isContractManagedSubscription } from "../../modules/commercial/activation.service.js";
 import { paramString } from "../../shared/params.js";
 import { ok } from "../../shared/response.js";
 
@@ -78,6 +79,10 @@ subscriptionsRouter.patch(
   requirePermission("subscription.manage"),
   asyncHandler(async (req, res) => {
     cancelSubscriptionSchema.parse(req.body); // only {status: "canceled"} is valid in v1
+    // Block 1D — a subscription backed by an active contractual grant ends through the contract (UL), never self-service.
+    if (await isContractManagedSubscription(req.membership!.organizationId, paramString(req.params.subscriptionId)!)) {
+      throw new AppError(409, "SUBSCRIPTION_CONTRACT_MANAGED", "This subscription is managed by a contract and cannot be canceled here");
+    }
     const subscription = await cancelSubscription({
       organizationId: req.membership!.organizationId,
       subscriptionId: paramString(req.params.subscriptionId)!,
