@@ -1,4 +1,5 @@
 import { and, count, desc, eq, exists, gte, ilike, inArray, lt, lte, or, sql, type SQL } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import type { z } from "zod";
 import { db } from "../../db/index.js";
 import {
@@ -40,30 +41,48 @@ import { contractSummaryDto } from "./serializers.js";
  * pagination on (createdAt, id) descending, like the platform audit log.
  */
 
-type Cursor = { at: Date; id: string };
+/**
+ * Keyset cursor = (timestamp, id). The timestamp is carried at FULL Postgres precision (microseconds,
+ * rendered by Postgres via `preciseAt`) and compared in SQL — never through a JS Date, which only holds
+ * milliseconds: two rows in the same millisecond would otherwise make the next page skip one.
+ * Older millisecond cursors (`…sss.mmmZ`) are still accepted.
+ */
+type Cursor = { at: string; id: string };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
 
-function encodeCursor(at: Date, id: string) {
-  return Buffer.from(`${at.toISOString()}|${id}`, "utf8").toString("base64url");
+/** A column's value as a UTC ISO string with microseconds, produced by Postgres. */
+const preciseAt = (column: SQL.Aliased | PgColumn) => sql<string>`to_char(${column} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+/** "Strictly after the cursor" for ORDER BY (column DESC, id DESC), compared at full precision. */
+const afterCursor = (column: PgColumn, idColumn: PgColumn, c: Cursor) =>
+  or(sql`${column} < ${c.at}::timestamptz`, and(sql`${column} = ${c.at}::timestamptz`, lt(idColumn, c.id)))!;
+
+function encodeCursor(at: string, id: string) {
+  return Buffer.from(`${at}|${id}`, "utf8").toString("base64url");
 }
 function decodeCursor(raw: string): Cursor {
-  const [atRaw, id] = Buffer.from(raw, "base64url").toString("utf8").split("|");
-  const at = atRaw ? new Date(atRaw) : undefined;
-  if (!at || Number.isNaN(at.getTime()) || !id || !UUID.test(id)) throw new ValidationError("Invalid cursor");
+  const [at, id] = Buffer.from(raw, "base64url").toString("utf8").split("|");
+  if (!at || !ISO_UTC.test(at) || Number.isNaN(new Date(at).getTime()) || !id || !UUID.test(id)) throw new ValidationError("Invalid cursor");
   return { at, id };
 }
-function page<T>(rows: T[], limit: number, key: (row: T) => { at: Date; id: string }) {
+function page<T extends { cursorAt: string }>(rows: T[], limit: number, idOf: (row: T) => string) {
   const hasMore = rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
   const last = items[items.length - 1];
-  return { items, nextCursor: hasMore && last ? encodeCursor(key(last).at, key(last).id) : null };
+  return { items, nextCursor: hasMore && last ? encodeCursor(last.cursorAt, idOf(last)) : null };
+}
+/** Removes the internal cursor column before a row leaves the module. */
+function withoutCursor<T extends { cursorAt: string }>(row: T): Omit<T, "cursorAt"> {
+  const { cursorAt, ...rest } = row;
+  void cursorAt;
+  return rest;
 }
 /**
  * Runs the given (lazy) Drizzle queries ONE AT A TIME and returns their results in order — same shape as
  * Promise.all. Never Promise.all database reads here: production reaches Postgres through the Supabase
- * transaction pooler with a small client pool (max 5, db/index.ts); when concurrent queries exceed the pool,
- * postgres.js pipelines them onto busy connections and the pooler stalls (GET /platform/commercial/summary
- * hit the 300 s Vercel timeout with 8 parallel counts; reproduced read-only with 12 parallel selects).
+ * transaction pooler with a small client pool (max 5, db/index.ts), and several queries in flight at once
+ * through that pooler can stall (GET /platform/commercial/summary hit the 300 s Vercel timeout with 8
+ * parallel counts; reproduced locally with Supavisor in transaction mode: old code hung, this returns).
  */
 async function inSequence<T extends readonly unknown[]>(queries: readonly [...{ [K in keyof T]: PromiseLike<T[K]> }]): Promise<T> {
   const results: unknown[] = [];
@@ -92,15 +111,15 @@ export async function listPlatformOrganizations(q: z.infer<typeof listOrganizati
   if (q.search) conditions.push(or(ilike(organizations.name, likeLiteral(q.search)), ilike(organizations.slug, likeLiteral(q.search)))!);
   if (q.cursor) {
     const c = decodeCursor(q.cursor);
-    conditions.push(or(lt(organizations.createdAt, c.at), and(eq(organizations.createdAt, c.at), lt(organizations.id, c.id)))!);
+    conditions.push(afterCursor(organizations.createdAt, organizations.id, c));
   }
   const rows = await db
-    .select({ id: organizations.id, name: organizations.name, slug: organizations.slug, status: organizations.status, createdAt: organizations.createdAt })
+    .select({ id: organizations.id, name: organizations.name, slug: organizations.slug, status: organizations.status, createdAt: organizations.createdAt, cursorAt: preciseAt(organizations.createdAt) })
     .from(organizations)
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(organizations.createdAt), desc(organizations.id))
     .limit(q.limit + 1);
-  const result = page(rows, q.limit, (r) => ({ at: r.createdAt, id: r.id }));
+  const result = page(rows, q.limit, (r) => r.id);
   const ids = result.items.map((r) => r.id);
   const [access, contractCounts] = ids.length
     ? await inSequence([
@@ -117,7 +136,7 @@ export async function listPlatformOrganizations(q: z.infer<typeof listOrganizati
       ])
     : [[], []];
   return {
-    items: result.items.map((o) => ({
+    items: result.items.map(withoutCursor).map((o) => ({
       ...o,
       applications: access.filter((a) => a.organizationId === o.id).map((a) => a.applicationKey).sort(),
       contracts: Object.fromEntries(contractCounts.filter((c) => c.organizationId === o.id).map((c) => [c.status, c.n])),
@@ -155,6 +174,7 @@ function provisioningSelection() {
     credentialStatus: apiKeys.status,
     credentialCreatedAt: apiKeys.createdAt,
     credentialRevokedAt: apiKeys.revokedAt,
+    cursorAt: preciseAt(credentialProvisioningRequests.createdAt), // internal — stripped by provisioningDto
   };
 }
 type ProvisioningRow = Awaited<ReturnType<typeof provisioningRows>>[number];
@@ -169,7 +189,7 @@ function provisioningRows(where: SQL | undefined, limit?: number) {
   return limit ? query.limit(limit) : query;
 }
 function provisioningDto(r: ProvisioningRow) {
-  const { credentialId, credentialStatus, credentialCreatedAt, credentialRevokedAt, ...rest } = r;
+  const { credentialId, credentialStatus, credentialCreatedAt, credentialRevokedAt, ...rest } = withoutCursor(r);
   return { ...rest, credential: credentialId ? { id: credentialId, status: credentialStatus, createdAt: credentialCreatedAt, revokedAt: credentialRevokedAt } : null };
 }
 
@@ -275,17 +295,17 @@ export async function listPlatformContracts(q: z.infer<typeof listContractsQuery
   }
   if (q.cursor) {
     const c = decodeCursor(q.cursor);
-    conditions.push(or(lt(contracts.createdAt, c.at), and(eq(contracts.createdAt, c.at), lt(contracts.id, c.id)))!);
+    conditions.push(afterCursor(contracts.createdAt, contracts.id, c));
   }
   const rows = await db
-    .select({ contract: contracts, version: contractVersions, organizationName: organizations.name })
+    .select({ contract: contracts, version: contractVersions, organizationName: organizations.name, cursorAt: preciseAt(contracts.createdAt) })
     .from(contracts)
     .innerJoin(organizations, eq(organizations.id, contracts.organizationId))
     .leftJoin(contractVersions, eq(contractVersions.id, contracts.currentVersionId))
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(contracts.createdAt), desc(contracts.id))
     .limit(q.limit + 1);
-  const result = page(rows, q.limit, (r) => ({ at: r.contract.createdAt, id: r.contract.id }));
+  const result = page(rows, q.limit, (r) => r.contract.id);
   const versionIds = result.items.map((r) => r.version?.id).filter((v): v is string => Boolean(v));
   const apps = versionIds.length
     ? await db
@@ -312,10 +332,10 @@ export async function listPlatformProvisionings(q: z.infer<typeof listProvisioni
   if (q.status) conditions.push(eq(credentialProvisioningRequests.status, q.status));
   if (q.cursor) {
     const c = decodeCursor(q.cursor);
-    conditions.push(or(lt(credentialProvisioningRequests.createdAt, c.at), and(eq(credentialProvisioningRequests.createdAt, c.at), lt(credentialProvisioningRequests.id, c.id)))!);
+    conditions.push(afterCursor(credentialProvisioningRequests.createdAt, credentialProvisioningRequests.id, c));
   }
   const rows = await provisioningRows(conditions.length ? and(...conditions) : undefined, q.limit + 1);
-  const result = page(rows, q.limit, (r) => ({ at: r.createdAt, id: r.id }));
+  const result = page(rows, q.limit, (r) => r.id);
   const names = result.items.length
     ? await db.select({ id: organizations.id, name: organizations.name }).from(organizations).where(inArray(organizations.id, [...new Set(result.items.map((r) => r.organizationId))]))
     : [];
@@ -337,7 +357,7 @@ export async function listPlatformCommercialEvents(q: z.infer<typeof listCommerc
   if (q.to) conditions.push(lte(commercialEvents.occurredAt, q.to));
   if (q.cursor) {
     const c = decodeCursor(q.cursor);
-    conditions.push(or(lt(commercialEvents.occurredAt, c.at), and(eq(commercialEvents.occurredAt, c.at), lt(commercialEvents.id, c.id)))!);
+    conditions.push(afterCursor(commercialEvents.occurredAt, commercialEvents.id, c));
   }
   const rows = await db
     .select({
@@ -353,6 +373,7 @@ export async function listPlatformCommercialEvents(q: z.infer<typeof listCommerc
       correlationId: commercialEvents.correlationId,
       payload: commercialEvents.payload,
       occurredAt: commercialEvents.occurredAt,
+      cursorAt: preciseAt(commercialEvents.occurredAt),
     })
     .from(commercialEvents)
     .leftJoin(organizations, eq(organizations.id, commercialEvents.organizationId))
@@ -360,8 +381,8 @@ export async function listPlatformCommercialEvents(q: z.infer<typeof listCommerc
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(desc(commercialEvents.occurredAt), desc(commercialEvents.id))
     .limit(q.limit + 1);
-  const result = page(rows, q.limit, (r) => ({ at: r.occurredAt, id: r.id }));
-  return { items: result.items.map((r) => ({ ...r, payload: redact(r.payload) })), nextCursor: result.nextCursor };
+  const result = page(rows, q.limit, (r) => r.id);
+  return { items: result.items.map(withoutCursor).map((r) => ({ ...r, payload: redact(r.payload) })), nextCursor: result.nextCursor };
 }
 
 // --------------------------------------------------------------------------------------- summary
