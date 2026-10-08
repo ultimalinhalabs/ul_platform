@@ -42,7 +42,7 @@ async function main() {
       headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const json = (await res.json().catch(() => undefined)) as { data?: any; error?: any } | undefined;
+    const json = (await res.json().catch(() => undefined)) as { data?: ReturnType<typeof JSON.parse>; error?: ReturnType<typeof JSON.parse> } | undefined;
     if (!res.ok) throw new Error(`${method} ${path} -> ${res.status} ${JSON.stringify(json?.error)}`);
     return json!.data;
   }

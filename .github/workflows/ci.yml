@@ -22,14 +22,16 @@ jobs:
     services:
       postgres:
         image: postgres:16
+        # Owner role `postgres`, as on Supabase and the local stack: migration 0019
+        # revokes default privileges FOR ROLE postgres, which must exist.
         env:
-          POSTGRES_USER: ul_platform_ci
-          POSTGRES_PASSWORD: ul_platform_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
           POSTGRES_DB: ul_platform_ci
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ul_platform_ci"
+          --health-cmd "pg_isready -U postgres"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -38,7 +40,7 @@ jobs:
       NODE_ENV: test
       APP_ENV: development
       PORT: 4000
-      DATABASE_URL: postgres://ul_platform_ci:ul_platform_ci@localhost:5432/ul_platform_ci
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/ul_platform_ci
       # A CI-only fixture, self-consistent with SUPABASE_JWT_SECRET below —
       # tests mint their own HS256 tokens against this secret and never make
       # a real network call to this host (the ES256/JWKS path is never
