@@ -13,6 +13,7 @@ import {
   terminateContract,
 } from "../../modules/commercial/activation.service.js";
 import type { CommercialActor } from "../../modules/commercial/events.js";
+import { getContractSource } from "../../modules/commercial/platformRead.service.js";
 import {
   createItem,
   createOption,
@@ -192,7 +193,11 @@ const revocationSchema = z.object({ reason: z.string().trim().min(1).max(500) })
 commercialRouter.get(
   "/platform/contracts/:contractId",
   ...read,
-  asyncHandler(async (req, res) => ok(res, await getPlatformContract(p(req, "contractId")))),
+  // UL Console MVP: additive `source` (originating proposal/version/option) — existing fields unchanged.
+  asyncHandler(async (req, res) => {
+    const contract = await getPlatformContract(p(req, "contractId"));
+    ok(res, { ...contract, source: await getContractSource(contract.id) });
+  }),
 );
 
 commercialRouter.get(
