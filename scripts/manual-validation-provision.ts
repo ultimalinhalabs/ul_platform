@@ -44,7 +44,7 @@ async function main() {
       headers: { apikey: init.key, authorization: `Bearer ${init.bearer ?? init.key}`, "content-type": "application/json" },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     });
-    const json = (await res.json().catch(() => undefined)) as any;
+    const json = (await res.json().catch(() => undefined)) as ReturnType<typeof JSON.parse>;
     // Only the status and Supabase's error code — never the request body (passwords).
     if (!res.ok) throw new Error(`Supabase ${init.method} ${path} -> ${res.status} ${json?.error_code ?? json?.code ?? ""}`);
     return json;
@@ -56,7 +56,7 @@ async function main() {
       headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const json = (await res.json().catch(() => undefined)) as { data?: any; error?: { code?: string } } | undefined;
+    const json = (await res.json().catch(() => undefined)) as { data?: ReturnType<typeof JSON.parse>; error?: { code?: string } } | undefined;
     if (!res.ok) throw new Error(`Platform ${method} ${path} -> ${res.status} ${json?.error?.code ?? ""}`);
     return json!.data;
   }

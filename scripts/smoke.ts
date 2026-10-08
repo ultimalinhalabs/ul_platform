@@ -18,6 +18,8 @@ import { SignJWT } from "jose";
 
 let passed = 0;
 let failed = 0;
+/** Cleanup runs on success AND on a crash (see main().catch) — tasks are registered as fixtures are created. */
+let runCleanup: () => Promise<void> = async () => {};
 function check(name: string, condition: boolean, extra?: unknown) {
   if (condition) {
     passed++;
@@ -113,6 +115,16 @@ async function main() {
   const receiverPort = 4311;
   const receiver = await startReceiver(receiverPort, received);
 
+  // LIFO: the last registered task runs first. Each task is isolated so one failure never skips the rest.
+  const cleanups: Array<() => Promise<unknown>> = [];
+  runCleanup = async () => {
+    for (const task of cleanups.splice(0).reverse()) {
+      await task().catch((error) => console.error("smoke cleanup step failed:", error));
+    }
+    await queryClient.end().catch(() => {});
+  };
+  cleanups.push(async () => receiver.close());
+
   await seed();
   await import("../src/server.js"); // starts listening on env.PORT as a side effect
 
@@ -180,6 +192,57 @@ async function main() {
   r = await call("POST", "/organizations", { token: tokenB, body: { name: `Smoke Org B ${ownerBId}` } });
   check("POST /organizations (org B) -> 201", r.status === 201);
   const orgBId: string = r.json?.data?.id;
+  cleanups.push(async () => {
+    await db.delete(users).where(eq(users.id, ownerAId));
+    await db.delete(users).where(eq(users.id, ownerBId));
+  });
+  cleanups.push(async () => {
+    if (orgAId) await db.delete(organizations).where(eq(organizations.id, orgAId)); // cascades application access, keys
+    if (orgBId) await db.delete(organizations).where(eq(organizations.id, orgBId));
+  });
+
+  // Grants a platform-admin fixture directly (bypassing the one-time
+  // bootstrap restriction — see modules/platformAdmins/bootstrap.ts, which
+  // deliberately refuses once *any* real admin exists on this shared
+  // database). Mirrors how this script already seeds organizations/API
+  // keys directly rather than going through a setup-only HTTP endpoint.
+  // Created here (not in "Platform Administration" below) because G6 needs a
+  // platform admin to grant application access before any API key is minted.
+  const platformAdminId = randomUUID();
+  const platformAdminToken = await mintUserToken(
+    platformAdminId,
+    `smoke-platform-admin-${platformAdminId}@test.ul-platform.invalid`,
+  );
+  await call("GET", "/me", { token: platformAdminToken }); // materializes the `users` row via ensureUserExists
+  cleanups.push(async () => db.delete(users).where(eq(users.id, platformAdminId))); // cascades platform_memberships
+  const [platformAdminRoleRow] = await db
+    .select({ id: platformRoles.id })
+    .from(platformRoles)
+    .where(eq(platformRoles.key, "PLATFORM_ADMIN"));
+  if (!platformAdminRoleRow) throw new Error("PLATFORM_ADMIN role not seeded");
+  await db.insert(platformMemberships).values({ userId: platformAdminId, platformRoleId: platformAdminRoleRow.id });
+
+  // --- G6: no API key without application access ---
+
+  r = await call("POST", `/organizations/${orgAId}/api-keys`, {
+    token: tokenA,
+    body: { applicationKey: "NA_PISTA", scopes: ["catalog.read"] },
+  });
+  check(
+    "G6: create API key WITHOUT application access -> 403 APPLICATION_ACCESS_REQUIRED",
+    r.status === 403 && r.json?.error?.code === "APPLICATION_ACCESS_REQUIRED",
+  );
+
+  // Application access granted through the official platform API (never SQL).
+  for (const [orgId, applicationKey] of [
+    [orgAId, "NA_PISTA"],
+    [orgAId, "QUALE_A_DICA"],
+    [orgAId, "MICHA_EXPRESS"],
+    [orgBId, "NA_PISTA"],
+  ] as const) {
+    r = await call("PUT", `/platform/organizations/${orgId}/applications/${applicationKey}/access`, { token: platformAdminToken });
+    check(`G6: grant ${applicationKey} access via PUT /platform/organizations/:id/applications/:key/access -> 200`, r.status === 200);
+  }
 
   // --- Service Scopes ---
 
@@ -468,28 +531,12 @@ async function main() {
   );
 
   // --- Platform Administration ---
-  // Grants a platform-admin fixture directly (bypassing the one-time
-  // bootstrap restriction — see modules/platformAdmins/bootstrap.ts, which
-  // deliberately refuses once *any* real admin exists on this shared
-  // database). Mirrors how this script already seeds organizations/API
-  // keys directly rather than going through a setup-only HTTP endpoint.
-
-  const platformAdminId = randomUUID();
-  const platformAdminToken = await mintUserToken(
-    platformAdminId,
-    `smoke-platform-admin-${platformAdminId}@test.ul-platform.invalid`,
-  );
-  await call("GET", "/me", { token: platformAdminToken }); // materializes the `users` row via ensureUserExists
-  const [platformAdminRoleRow] = await db
-    .select({ id: platformRoles.id })
-    .from(platformRoles)
-    .where(eq(platformRoles.key, "PLATFORM_ADMIN"));
-  if (!platformAdminRoleRow) throw new Error("PLATFORM_ADMIN role not seeded");
-  await db.insert(platformMemberships).values({ userId: platformAdminId, platformRoleId: platformAdminRoleRow.id });
+  // (the platform-admin fixture is created at the start — see "G6" above)
 
   const plainUserId = randomUUID();
   const plainUserToken = await mintUserToken(plainUserId, `smoke-plain-${plainUserId}@test.ul-platform.invalid`);
   await call("GET", "/me", { token: plainUserToken }); // materializes the `users` row, no org, no platform role
+  cleanups.push(async () => db.delete(users).where(eq(users.id, plainUserId)));
 
   r = await call("GET", "/platform/me", { token: platformAdminToken });
   check(
@@ -516,6 +563,21 @@ async function main() {
   check("POST /applications with a malformed token -> 401", r.status === 401);
 
   const smokeAppKey = `SMOKE_APP_${randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase()}`;
+  // Platform-level fixtures created through the mutation endpoints below are
+  // real rows in the shared application/environment/integration registries —
+  // clean them up so repeated `npm run smoke` runs don't accumulate
+  // SMOKE_APP_* junk applications. FK order matters: integrations/environments
+  // (RESTRICT on applicationId) before the application row itself;
+  // environments cascade their own endpoints.
+  cleanups.push(async () => {
+    const [smokeApp] = await db.select({ id: applications.id }).from(applications).where(eq(applications.key, smokeAppKey));
+    if (!smokeApp) return;
+    await db
+      .delete(applicationIntegrations)
+      .where(or(eq(applicationIntegrations.sourceApplicationId, smokeApp.id), eq(applicationIntegrations.targetApplicationId, smokeApp.id)));
+    await db.delete(applicationEnvironments).where(eq(applicationEnvironments.applicationId, smokeApp.id));
+    await db.delete(applications).where(eq(applications.id, smokeApp.id));
+  });
   r = await call("POST", "/applications", {
     token: platformAdminToken,
     body: { key: smokeAppKey, name: "Smoke Test App", description: "created by scripts/smoke.ts" },
@@ -719,41 +781,14 @@ async function main() {
   );
   await call("POST", `/organizations/${orgAId}/api-keys/${orgScopedKeyId}/revoke`, { token: tokenA });
 
-  receiver.close();
-
-  // Platform-level fixtures created directly through the mutation endpoints
-  // above are real rows in the shared application/environment/integration
-  // registries — clean them up explicitly so repeated `npm run smoke` runs
-  // don't accumulate SMOKE_APP_* junk applications. FK order matters:
-  // integrations/environments (RESTRICT on applicationId) before the
-  // application row itself; environments cascade their own endpoints.
-  const [smokeApp] = await db.select({ id: applications.id }).from(applications).where(eq(applications.key, smokeAppKey));
-  if (smokeApp) {
-    await db
-      .delete(applicationIntegrations)
-      .where(
-        or(
-          eq(applicationIntegrations.sourceApplicationId, smokeApp.id),
-          eq(applicationIntegrations.targetApplicationId, smokeApp.id),
-        ),
-      );
-    await db.delete(applicationEnvironments).where(eq(applicationEnvironments.applicationId, smokeApp.id));
-    await db.delete(applications).where(eq(applications.id, smokeApp.id));
-  }
-
-  await db.delete(organizations).where(eq(organizations.id, orgAId));
-  await db.delete(organizations).where(eq(organizations.id, orgBId));
-  await db.delete(users).where(eq(users.id, ownerAId)); // cascades platform_memberships (granted above)
-  await db.delete(users).where(eq(users.id, ownerBId));
-  await db.delete(users).where(eq(users.id, platformAdminId)); // cascades platform_memberships
-  await db.delete(users).where(eq(users.id, plainUserId));
-  await queryClient.end();
+  await runCleanup();
 
   console.log(`\n${passed}/${passed + failed} smoke assertions passed`);
   process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   console.error("Smoke test crashed:", error);
+  await runCleanup(); // fixtures are removed even when the run crashes
   process.exit(1);
 });
