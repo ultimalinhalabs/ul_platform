@@ -58,6 +58,19 @@ function page<T>(rows: T[], limit: number, key: (row: T) => { at: Date; id: stri
   const last = items[items.length - 1];
   return { items, nextCursor: hasMore && last ? encodeCursor(key(last).at, key(last).id) : null };
 }
+/**
+ * Runs the given (lazy) Drizzle queries ONE AT A TIME and returns their results in order — same shape as
+ * Promise.all. Never Promise.all database reads here: production reaches Postgres through the Supabase
+ * transaction pooler with a small client pool (max 5, db/index.ts); when concurrent queries exceed the pool,
+ * postgres.js pipelines them onto busy connections and the pooler stalls (GET /platform/commercial/summary
+ * hit the 300 s Vercel timeout with 8 parallel counts; reproduced read-only with 12 parallel selects).
+ */
+async function inSequence<T extends readonly unknown[]>(queries: readonly [...{ [K in keyof T]: PromiseLike<T[K]> }]): Promise<T> {
+  const results: unknown[] = [];
+  for (const query of queries) results.push(await query);
+  return results as unknown as T;
+}
+
 /** Literal match: `%`, `_` and `\` in user input are escaped, never wildcards. */
 const likeLiteral = (term: string) => `%${term.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
@@ -90,7 +103,7 @@ export async function listPlatformOrganizations(q: z.infer<typeof listOrganizati
   const result = page(rows, q.limit, (r) => ({ at: r.createdAt, id: r.id }));
   const ids = result.items.map((r) => r.id);
   const [access, contractCounts] = ids.length
-    ? await Promise.all([
+    ? await inSequence([
         db
           .select({ organizationId: organizationApplicationAccess.organizationId, applicationKey: applications.key })
           .from(organizationApplicationAccess)
@@ -162,7 +175,7 @@ function provisioningDto(r: ProvisioningRow) {
 
 export async function getPlatformOrganization(organizationId: string) {
   const organization = await requireOrganization(organizationId);
-  const [access, subs, contractRows, provisioning] = await Promise.all([
+  const [access, subs, contractRows, provisioning] = await inSequence([
     db
       .select({
         applicationKey: applications.key,
@@ -355,7 +368,7 @@ export async function listPlatformCommercialEvents(q: z.infer<typeof listCommerc
 
 /** Simple operational counts straight from the model (no analytics, no materialized views). */
 export async function getPlatformCommercialSummary() {
-  const [orgs, proposalRows, contractRows, provisioningRowsByStatus, credentialRows, [activeSubs], [effectiveAccess], [activeGrants]] = await Promise.all([
+  const [orgs, proposalRows, contractRows, provisioningRowsByStatus, credentialRows, [activeSubs], [effectiveAccess], [activeGrants]] = await inSequence([
     db.select({ status: organizations.status, n: count() }).from(organizations).groupBy(organizations.status),
     db.select({ status: proposals.status, n: count() }).from(proposals).groupBy(proposals.status),
     db.select({ status: contracts.status, n: count() }).from(contracts).groupBy(contracts.status),
