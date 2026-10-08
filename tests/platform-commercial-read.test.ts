@@ -418,3 +418,10 @@ test("platform.audit.read semantics unchanged: tenant/commercial events still ex
   assert.ok(r.data.items.every((e: { action: string }) => /^(platform|environment|endpoint|integration)\./.test(e.action)));
   assert.ok(!r.raw.includes(fixture.orgId), "no organization-scoped row");
 });
+
+test("read model never runs database queries concurrently (Supabase transaction pooler + max 5 pool stalls on pipelined queries)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/modules/commercial/platformRead.service.ts", import.meta.url), "utf8");
+  assert.ok(!/Promise\.all\s*\(/.test(source), "use inSequence([...]) — never Promise.all — for DB reads in this module");
+  assert.ok(/inSequence\(\[/.test(source));
+});
