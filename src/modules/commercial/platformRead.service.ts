@@ -214,7 +214,7 @@ export async function getPlatformOrganization(organizationId: string) {
 export async function listPlatformOrganizationMembers(organizationId: string) {
   await requireOrganization(organizationId);
   return db
-    .select({ membershipId: memberships.id, userId: memberships.userId, email: users.email, role: roles.key, status: memberships.status, createdAt: memberships.createdAt })
+    .select({ membershipId: memberships.id, email: users.email, role: roles.key, status: memberships.status, createdAt: memberships.createdAt })
     .from(memberships)
     .innerJoin(users, eq(users.id, memberships.userId))
     .innerJoin(roles, eq(roles.id, memberships.roleId))

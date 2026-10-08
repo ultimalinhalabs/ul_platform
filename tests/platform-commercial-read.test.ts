@@ -297,7 +297,7 @@ test("7/8/9. no secret, hash, token or service credential appears in any respons
   const t = terms.data.find((x: { id: string }) => x.id === termsId);
   assert.deepEqual(Object.keys(t).sort(), ["approvedAt", "approvedBy", "contentSha256", "createdAt", "id", "key", "status", "title", "updatedAt", "version"]);
   const members = await get(`/platform/organizations/${fixture.orgId}/members`, admin.token);
-  assert.deepEqual(Object.keys(members.data[0]).sort(), ["createdAt", "email", "membershipId", "role", "status", "userId"]);
+  assert.deepEqual(Object.keys(members.data[0]).sort(), ["createdAt", "email", "membershipId", "role", "status"], "members: no user id or auth data");
 });
 
 // ------------------------------------------------------------------------------------------- 11–13, 15
