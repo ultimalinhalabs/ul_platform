@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, like, lt, lte, or, gte, SQL } from "drizzle-orm";
+import { and, desc, eq, isNull, like, lt, lte, or, gte, sql, SQL } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { applications, auditLogs, users } from "../../db/schema/index.js";
 import { ValidationError } from "../../shared/errors.js";
@@ -64,14 +64,21 @@ export interface PlatformAuditLogFilters {
   limit: number;
 }
 
+/**
+ * `createdAt` is carried at FULL Postgres precision (microseconds, rendered by Postgres) and compared in
+ * SQL — a JS Date only holds milliseconds, so two events in the same millisecond made the next page skip
+ * one (the intermittent "stable cursor" test failure). Older millisecond cursors are still accepted.
+ */
 interface Cursor {
-  createdAt: Date;
+  createdAt: string;
   id: string;
 }
 
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/;
+
 /** Opaque to the client by design — see modules/audit/schemas.ts. */
 function encodeCursor(row: Cursor): string {
-  return Buffer.from(`${row.createdAt.toISOString()}|${row.id}`, "utf8").toString("base64url");
+  return Buffer.from(`${row.createdAt}|${row.id}`, "utf8").toString("base64url");
 }
 
 function decodeCursor(cursor: string): Cursor {
@@ -81,9 +88,8 @@ function decodeCursor(cursor: string): Cursor {
   } catch {
     throw new ValidationError("Invalid cursor");
   }
-  const [createdAtRaw, id] = raw.split("|");
-  const createdAt = createdAtRaw ? new Date(createdAtRaw) : undefined;
-  if (!createdAt || Number.isNaN(createdAt.getTime()) || !id) {
+  const [createdAt, id] = raw.split("|");
+  if (!createdAt || !ISO_UTC.test(createdAt) || Number.isNaN(new Date(createdAt).getTime()) || !id) {
     throw new ValidationError("Invalid cursor");
   }
   return { createdAt, id };
@@ -146,7 +152,7 @@ export async function listPlatformAuditLogs(
   if (filters.cursor) {
     const { createdAt, id } = decodeCursor(filters.cursor);
     conditions.push(
-      or(lt(auditLogs.createdAt, createdAt), and(eq(auditLogs.createdAt, createdAt), lt(auditLogs.id, id))!)!,
+      or(sql`${auditLogs.createdAt} < ${createdAt}::timestamptz`, and(sql`${auditLogs.createdAt} = ${createdAt}::timestamptz`, lt(auditLogs.id, id))!)!,
     );
   }
 
@@ -161,6 +167,7 @@ export async function listPlatformAuditLogs(
       targetId: auditLogs.targetId,
       metadata: auditLogs.metadata,
       createdAt: auditLogs.createdAt,
+      cursorAt: sql<string>`to_char(${auditLogs.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
     })
     .from(auditLogs)
     .leftJoin(users, eq(users.id, auditLogs.actorUserId))
@@ -172,9 +179,10 @@ export async function listPlatformAuditLogs(
     .limit(filters.limit + 1);
 
   const hasMore = rows.length > filters.limit;
-  const items = hasMore ? rows.slice(0, filters.limit) : rows;
-  const last = items[items.length - 1];
-  const nextCursor = hasMore && last ? encodeCursor({ createdAt: last.createdAt, id: last.id }) : null;
+  const page = hasMore ? rows.slice(0, filters.limit) : rows;
+  const last = page[page.length - 1];
+  const nextCursor = hasMore && last ? encodeCursor({ createdAt: last.cursorAt, id: last.id }) : null;
+  const items = page.map(({ cursorAt, ...entry }) => (void cursorAt, entry));
 
   return { items, nextCursor };
 }

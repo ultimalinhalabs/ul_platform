@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, queryClient } from "../src/db/index.js";
 import { auditLogs, platformMemberships } from "../src/db/schema/index.js";
 import { seed } from "../src/db/seed/index.js";
@@ -171,5 +171,30 @@ test("a real platform.admin.created event is visible through the control-plane a
   } finally {
     await db.delete(platformMemberships).where(eq(platformMemberships.userId, admin.id));
     await deleteTestUser(admin.id);
+  }
+});
+
+test("listPlatformAuditLogs never skips rows that share a millisecond (cursor keeps microsecond precision)", async () => {
+  await seed();
+  const action = `platform.test.samems.action.${Date.now()}`;
+  try {
+    // Three control-plane rows in the SAME millisecond, different microseconds (JS Dates would collapse them).
+    for (const [i, us] of ["000100", "000200", "000300"].entries()) {
+      await db.execute(sql`insert into audit_logs (action, target_type, target_id, created_at) values (${action}, 'page', ${String(i)}, ${`2099-01-01 00:00:00.${us}+00`}::timestamptz)`);
+    }
+    const seen: string[] = [];
+    let cursor: string | null | undefined;
+    do {
+      const page = await listPlatformAuditLogs({ action, limit: 1, cursor: cursor ?? undefined });
+      seen.push(...page.items.map((i) => i.targetId!));
+      assert.ok(page.items.every((i) => !("cursorAt" in i)), "the internal cursor column never leaves the service");
+      cursor = page.nextCursor;
+    } while (cursor);
+    assert.deepEqual(seen, ["2", "1", "0"], "all three rows, newest first, none skipped");
+    // A millisecond-precision cursor issued before this fix is still accepted.
+    const legacy = Buffer.from(`2099-01-01T00:00:00.001Z|${"0".repeat(8)}-0000-4000-8000-${"0".repeat(12)}`, "utf8").toString("base64url");
+    assert.deepEqual((await listPlatformAuditLogs({ action, limit: 10, cursor: legacy })).items.map((i) => i.targetId), ["2", "1", "0"]);
+  } finally {
+    await wipeAuditAction(action);
   }
 });

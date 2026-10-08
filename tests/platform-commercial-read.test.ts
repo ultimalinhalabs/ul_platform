@@ -425,3 +425,28 @@ test("read model never runs database queries concurrently (Supabase transaction 
   assert.ok(!/Promise\.all\s*\(/.test(source), "use inSequence([...]) — never Promise.all — for DB reads in this module");
   assert.ok(/inSequence\(\[/.test(source));
 });
+
+test("pagination never skips rows that share a millisecond (cursor keeps microsecond precision); legacy ms cursors still work", async () => {
+  const tag = `pcrsamems${Date.now()}`;
+  try {
+    for (const us of ["000100", "000200", "000300"]) {
+      await db.execute(sql`insert into organizations (name, slug, created_at) values (${`${tag}-${us}`}, ${`${tag}-${us}`}, ${`2099-01-01 00:00:00.${us}+00`}::timestamptz)`);
+    }
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const r = await get(`/platform/organizations?search=${tag}&limit=1${cursor ? `&cursor=${cursor}` : ""}`, admin.token);
+      assert.equal(r.status, 200, r.raw);
+      assert.ok(!r.raw.includes("cursorAt"), "the internal cursor column never leaves the API");
+      seen.push(...r.data.items.map((o: { name: string }) => o.name.slice(-6)));
+      cursor = r.data.nextCursor;
+    } while (cursor);
+    assert.deepEqual(seen, ["000300", "000200", "000100"], "all three rows, newest first, none skipped");
+    const legacy = Buffer.from(`2099-01-01T00:00:00.001Z|${"0".repeat(8)}-0000-4000-8000-${"0".repeat(12)}`, "utf8").toString("base64url");
+    const r = await get(`/platform/organizations?search=${tag}&limit=10&cursor=${legacy}`, admin.token);
+    assert.equal(r.status, 200, "a millisecond cursor issued before this fix is still accepted");
+    assert.equal(r.data.items.length, 3);
+  } finally {
+    await db.execute(sql`delete from organizations where slug like ${`${tag}-%`}`);
+  }
+});
