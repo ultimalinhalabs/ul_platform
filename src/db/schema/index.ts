@@ -29,3 +29,4 @@ export * from "./proposals.js";
 export * from "./contracts.js";
 export * from "./entitlementGrants.js";
 export * from "./credentialProvisioning.js";
+export * from "./leads.js";
