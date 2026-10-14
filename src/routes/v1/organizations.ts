@@ -1,14 +1,18 @@
 import { Router } from "express";
+import { env } from "../../config/env.js";
 import { authenticate } from "../../middleware/authenticate.js";
 import { requireOrganizationMembership } from "../../middleware/organizationContext.js";
+import { rateLimit } from "../../middleware/rateLimit.js";
 import { requirePermission } from "../../middleware/requirePermission.js";
 import { roleHasPermission } from "../../modules/authorization/service.js";
+import { idempotencyKeySchema } from "../../modules/commercial/schemas.js";
 import {
   createOrganizationSchema,
   updateOrganizationSchema,
 } from "../../modules/organizations/schemas.js";
+import { isEmailVerified } from "../../modules/users/service.js";
 import {
-  createOrganization,
+  createOrganizationIdempotently,
   deleteOrganization,
   getOrganizationById,
   updateOrganization,
@@ -21,20 +25,39 @@ import {
   updateMembership,
 } from "../../modules/memberships/service.js";
 import { asyncHandler } from "../../shared/asyncHandler.js";
-import { ForbiddenError, UnauthorizedError } from "../../shared/errors.js";
+import { EmailNotVerifiedError, ForbiddenError, UnauthorizedError, ValidationError } from "../../shared/errors.js";
 import { paramString } from "../../shared/params.js";
 import { ok } from "../../shared/response.js";
 
 export const organizationsRouter = Router();
 
+/**
+ * Self-service tenant creation. Requires an email the identity provider has
+ * verified (auth.users, never user_metadata) and an Idempotency-Key, so a
+ * retried submission returns the organization it already created (200)
+ * instead of a second one. Grants OWNER only — no application, subscription
+ * or contract (see createOrganizationIdempotently).
+ */
 organizationsRouter.post(
   "/organizations",
   authenticate,
+  rateLimit({ keyPrefix: "organization.create", windowMs: 10 * 60_000, max: 10 }),
   asyncHandler(async (req, res) => {
     if (!req.auth) throw new UnauthorizedError();
+    const key = idempotencyKeySchema.safeParse(req.get("idempotency-key"));
+    if (!key.success) throw new ValidationError("A valid Idempotency-Key header is required");
     const body = createOrganizationSchema.parse(req.body);
-    const organization = await createOrganization({ ...body, createdBy: req.auth.userId });
-    ok(res, organization, 201);
+    if (!(await isEmailVerified(req.auth.userId))) throw new EmailNotVerifiedError();
+
+    const { organization, replayed } = await createOrganizationIdempotently({
+      ...body,
+      createdBy: req.auth.userId,
+      idempotencyKey: key.data,
+      dailyLimit: env.ORGANIZATION_CREATION_DAILY_LIMIT,
+    });
+    res.set("Cache-Control", "no-store");
+    if (replayed) res.set("Idempotent-Replayed", "true");
+    ok(res, organization, replayed ? 200 : 201);
   }),
 );
 

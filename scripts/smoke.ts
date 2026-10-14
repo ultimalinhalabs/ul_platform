@@ -1,4 +1,8 @@
 import "dotenv/config";
+import { assertLocalOnlyTargets } from "./localOnlyGuard.js";
+
+// Dev-only: refuses to run unless every target is local (see localOnlyGuard.ts).
+assertLocalOnlyTargets({ database: true });
 import { randomUUID } from "node:crypto";
 import http from "node:http";
 import { SignJWT } from "jose";
@@ -66,7 +70,7 @@ async function main() {
   const { seed } = await import("../src/db/seed/index.js");
   const { verifyWebhookSignature } = await import("../src/modules/webhooks/signature.js");
   const { EXPECTED_ISSUER } = await import("../src/integrations/supabase/jwt.js");
-  const { eq, or } = await import("drizzle-orm");
+  const { eq, or, sql } = await import("drizzle-orm");
 
   const BASE = `http://127.0.0.1:${env.PORT}/v1`;
 
@@ -126,6 +130,10 @@ async function main() {
   cleanups.push(async () => receiver.close());
 
   await seed();
+  // A Supabase project has auth.users; a disposable/CI database doesn't. Provide the minimal shape BEFORE the
+  // server answers anything (users/service.ts caches whether the table exists), so email verification is real.
+  await db.execute(sql`create schema if not exists auth`);
+  await db.execute(sql`create table if not exists auth.users (id uuid primary key, email_confirmed_at timestamptz)`);
   await import("../src/server.js"); // starts listening on env.PORT as a side effect
 
   for (let i = 0; i < 50; i++) {
@@ -185,11 +193,24 @@ async function main() {
   check("GET /me (fresh user) -> 200", r.status === 200);
   check("fresh user has no memberships yet", (r.json?.data?.memberships ?? []).length === 0);
 
+  const orgAKey = `smoke-org-a-${randomUUID()}`;
+  r = await call("POST", "/organizations", { token: tokenA, body: { name: `Smoke Org A ${ownerAId}` }, headers: { "Idempotency-Key": orgAKey } });
+  check("POST /organizations with an unverified email -> 403 EMAIL_NOT_VERIFIED", r.status === 403 && r.json?.error?.code === "EMAIL_NOT_VERIFIED");
+
+  cleanups.push(async () => db.execute(sql`delete from auth.users where id in (${ownerAId}, ${ownerBId})`));
+  await db.execute(sql`insert into auth.users (id, email_confirmed_at) values (${ownerAId}, now()), (${ownerBId}, now())`);
+
   r = await call("POST", "/organizations", { token: tokenA, body: { name: `Smoke Org A ${ownerAId}` } });
+  check("POST /organizations without an Idempotency-Key -> 400", r.status === 400);
+
+  r = await call("POST", "/organizations", { token: tokenA, body: { name: `Smoke Org A ${ownerAId}` }, headers: { "Idempotency-Key": orgAKey } });
   check("POST /organizations (org A) -> 201", r.status === 201);
   const orgAId: string = r.json?.data?.id;
 
-  r = await call("POST", "/organizations", { token: tokenB, body: { name: `Smoke Org B ${ownerBId}` } });
+  r = await call("POST", "/organizations", { token: tokenA, body: { name: `Smoke Org A ${ownerAId}` }, headers: { "Idempotency-Key": orgAKey } });
+  check("POST /organizations replay (same Idempotency-Key) -> 200, same organization", r.status === 200 && r.json?.data?.id === orgAId);
+
+  r = await call("POST", "/organizations", { token: tokenB, body: { name: `Smoke Org B ${ownerBId}` }, headers: { "Idempotency-Key": `smoke-org-b-${randomUUID()}` } });
   check("POST /organizations (org B) -> 201", r.status === 201);
   const orgBId: string = r.json?.data?.id;
   cleanups.push(async () => {

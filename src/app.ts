@@ -29,7 +29,8 @@ app.use(
   cors({
     origin: env.PLATFORM_ALLOWED_ORIGINS,
     methods: ["GET", "POST", "PATCH", "DELETE"],
-    allowedHeaders: ["Authorization", "Content-Type", "X-Request-ID"],
+    // Idempotency-Key: browser clients retry organization creation safely (POST /v1/organizations).
+    allowedHeaders: ["Authorization", "Content-Type", "X-Request-ID", "Idempotency-Key"],
     exposedHeaders: ["X-Request-ID"],
   }),
 );

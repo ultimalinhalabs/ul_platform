@@ -1,4 +1,8 @@
 import "dotenv/config";
+import { assertLocalOnlyTargets } from "./localOnlyGuard.js";
+
+// Dev-only: refuses to run unless every target is local (see localOnlyGuard.ts).
+assertLocalOnlyTargets({ supabase: true, database: true });
 
 /**
  * Removes every Na Pista manual-validation organization/user created by

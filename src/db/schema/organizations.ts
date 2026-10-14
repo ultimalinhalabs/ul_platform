@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, pgTable, text, uuid } from "drizzle-orm/pg-core";
+import { check, index, pgTable, text, uuid } from "drizzle-orm/pg-core";
 import { timestamps } from "./_helpers.js";
 import { users } from "./users.js";
 
@@ -18,4 +18,8 @@ export const organizations = pgTable("organizations", {
     .notNull()
     .default("active"),
   ...timestamps,
-}, (table) => [check("organizations_status_check", sql`${table.status} in ('active', 'suspended')`)]);
+}, (table) => [
+  check("organizations_status_check", sql`${table.status} in ('active', 'suspended')`),
+  // The per-user creation window (modules/organizations/service.ts) counts by creator and time.
+  index("organizations_created_by_created_at_idx").on(table.createdBy, table.createdAt),
+]);

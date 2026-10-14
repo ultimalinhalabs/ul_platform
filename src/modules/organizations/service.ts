@@ -1,10 +1,10 @@
-import { randomBytes } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { createHash, randomBytes } from "node:crypto";
+import { and, count, eq, gt, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { memberships, organizations } from "../../db/schema/index.js";
+import { memberships, organizationCreationRequests, organizations } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
 import { getRoleByKey } from "../roles/service.js";
-import { NotFoundError, OrganizationSuspendedError } from "../../shared/errors.js";
+import { ConflictError, NotFoundError, OrganizationCreationLimitError, OrganizationSuspendedError } from "../../shared/errors.js";
 
 function slugify(name: string): string {
   const base = name
@@ -19,7 +19,8 @@ function slugify(name: string): string {
 /**
  * Creating an organization is a platform-level action, not an org-scoped
  * one — there's no membership to check permissions against before the
- * organization exists. Any authenticated user may call this; they become
+ * organization exists. Any user with a verified email may create one
+ * (checked by the callers: the route, and proposal acceptance); they become
  * the new organization's OWNER atomically with its creation.
  */
 export async function createOrganization(
@@ -31,15 +32,22 @@ export async function createOrganization(
   const tx = executor;
   const ownerRole = await getRoleByKey("OWNER", tx);
 
-  const [organization] = await tx
-    .insert(organizations)
-    .values({
-      name: input.name,
-      slug: input.slug ?? slugify(input.name),
-      createdBy: input.createdBy,
-    })
-    .returning();
-  if (!organization) throw new Error("Failed to create organization");
+  // A generated slug that happens to be taken is retried with a new suffix; a slug the caller
+  // chose is theirs to change (409). ON CONFLICT DO NOTHING keeps the caller's transaction usable.
+  let organization: typeof organizations.$inferSelect | undefined;
+  for (let attempt = 0; !organization && attempt < SLUG_ATTEMPTS; attempt++) {
+    [organization] = await tx
+      .insert(organizations)
+      .values({
+        name: input.name,
+        slug: input.slug ?? slugify(input.name),
+        createdBy: input.createdBy,
+      })
+      .onConflictDoNothing({ target: organizations.slug })
+      .returning();
+    if (!organization && input.slug) throw new ConflictError("This organization slug is already in use");
+  }
+  if (!organization) throw new Error("Failed to create organization: no free slug");
 
   await tx.insert(memberships).values({
     userId: input.createdBy,
@@ -60,6 +68,78 @@ export async function createOrganization(
   );
 
   return organization;
+}
+
+const SLUG_ATTEMPTS = 5;
+
+/** The canonical request body an Idempotency-Key is bound to. */
+function creationRequestSha256(input: { name: string; slug?: string }): string {
+  return createHash("sha256").update(JSON.stringify({ name: input.name, slug: input.slug ?? null })).digest("hex");
+}
+
+/**
+ * `POST /v1/organizations` — creates the organization and its OWNER
+ * membership (createOrganization, one transaction) exactly once per
+ * Idempotency-Key:
+ *  - same key, same body ⇒ the organization it already created (`replayed`);
+ *  - same key, different body ⇒ 409, never a second tenant or an overwrite;
+ *  - more than `dailyLimit` organizations created by this user in the last
+ *    24 hours ⇒ 429 (`0` disables the window).
+ * One user's creations are serialized by a transaction-scoped advisory lock,
+ * so a double submission cannot slip two rows past the key or the window.
+ *
+ * Creating an organization grants no application access, subscription or
+ * contract — those come only from Última Linha (commercial activation).
+ * The caller's verified email is checked by the route, before this runs.
+ */
+export async function createOrganizationIdempotently(input: {
+  name: string;
+  slug?: string;
+  createdBy: string;
+  idempotencyKey: string;
+  dailyLimit: number;
+}): Promise<{ organization: typeof organizations.$inferSelect; replayed: boolean }> {
+  const requestSha256 = creationRequestSha256(input);
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`organization.create:${input.createdBy}`}, 0))`);
+
+    const [previous] = await tx
+      .select()
+      .from(organizationCreationRequests)
+      .where(and(eq(organizationCreationRequests.userId, input.createdBy), eq(organizationCreationRequests.idempotencyKey, input.idempotencyKey)))
+      .limit(1);
+    if (previous) {
+      if (previous.requestSha256 !== requestSha256) {
+        throw new ConflictError("This Idempotency-Key was already used for a different organization");
+      }
+      // The replay answers only while the caller still belongs to what it created.
+      const [replayed] = await tx
+        .select({ organization: organizations })
+        .from(organizations)
+        .innerJoin(memberships, and(eq(memberships.organizationId, organizations.id), eq(memberships.userId, input.createdBy), eq(memberships.status, "active")))
+        .where(eq(organizations.id, previous.organizationId))
+        .limit(1);
+      if (!replayed) throw new ConflictError("This Idempotency-Key was already used");
+      return { organization: replayed.organization, replayed: true };
+    }
+
+    if (input.dailyLimit > 0) {
+      const [recent] = await tx
+        .select({ n: count() })
+        .from(organizations)
+        .where(and(eq(organizations.createdBy, input.createdBy), gt(organizations.createdAt, sql`now() - interval '24 hours'`)));
+      if ((recent?.n ?? 0) >= input.dailyLimit) throw new OrganizationCreationLimitError();
+    }
+
+    const organization = await createOrganization({ name: input.name, slug: input.slug, createdBy: input.createdBy }, tx);
+    await tx.insert(organizationCreationRequests).values({
+      userId: input.createdBy,
+      idempotencyKey: input.idempotencyKey,
+      requestSha256,
+      organizationId: organization.id,
+    });
+    return { organization, replayed: false };
+  });
 }
 
 /**
