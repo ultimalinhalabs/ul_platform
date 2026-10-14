@@ -7,6 +7,8 @@ export const APPLICATIONS = [
   { key: "FOI", name: "Foi", description: "Logistics, transport and delivery." },
   { key: "QUALE_A_DICA", name: "Qualé a Dica?!", description: "WhatsApp/conversational automation." },
   { key: "HOJE_TEM", name: "Hoje Tem", description: "Última Linha ecosystem application." },
+  // Migration 0021 — the UL landing page; its only capability is submitting leads (`lead.create`).
+  { key: "UL_LANDING", name: "Landing Última Linha", description: "Public website of Última Linha (ultimalinha.ao); submits commercial contact requests." },
 ] as const;
 
 /**
@@ -62,6 +64,7 @@ export const SERVICE_SCOPES = [
   { key: "report.generate", description: "Generate a report." },
   // D2-B — provisioner-only: valid solely on a PLATFORM_SERVICE credential with purpose PROVISIONER (modules/apiKeys/service.ts).
   { key: "credential.provision", description: "Issue integration credentials for open provisioning requests of the credential's own application (provisioner only)." },
+  { key: "lead.create", description: "Submit a commercial contact request (lead) addressed to Última Linha." },
 ] as const;
 
 /**
@@ -80,6 +83,7 @@ export const APPLICATION_SERVICE_SCOPES: Record<string, string[]> = {
   FOI: ["event.publish", "usage.write", "usage.read", "catalog.read"],
   QUALE_A_DICA: ["event.publish", "usage.write", "usage.read", "catalog.read", "report.generate"],
   HOJE_TEM: ["event.publish", "usage.write", "usage.read", "report.generate"],
+  UL_LANDING: ["lead.create"],
 };
 
 /**
