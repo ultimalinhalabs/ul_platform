@@ -1,10 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, count, eq, gt, sql } from "drizzle-orm";
+import { env } from "../../config/env.js";
 import { db } from "../../db/index.js";
 import { memberships, organizationCreationRequests, organizations } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
 import { getRoleByKey } from "../roles/service.js";
 import { ConflictError, NotFoundError, OrganizationCreationLimitError, OrganizationSuspendedError } from "../../shared/errors.js";
+
+/** The random slug suffix. Replaceable only by tests, to force a collision (tests/organization-creation.test.ts). */
+export const slugSuffix = { next: (): string => randomBytes(3).toString("hex") };
 
 function slugify(name: string): string {
   const base = name
@@ -13,7 +17,7 @@ function slugify(name: string): string {
     .replace(/[̀-ͯ]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  return `${base || "org"}-${randomBytes(3).toString("hex")}`;
+  return `${base || "org"}-${slugSuffix.next()}`;
 }
 
 /**
@@ -72,6 +76,30 @@ export async function createOrganization(
 
 const SLUG_ATTEMPTS = 5;
 
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * The single per-user creation guard, shared by every path that creates an
+ * organization for a user (`POST /v1/organizations` and proposal acceptance
+ * with `organization.create`): takes a transaction-scoped advisory lock on
+ * the user — concurrent creations by one user are serialized, so neither a
+ * double submission nor parallel requests can slip past the window — and
+ * refuses with 429 ORGANIZATION_CREATION_LIMIT when the user already created
+ * `ORGANIZATION_CREATION_DAILY_LIMIT` organizations in the last 24 hours
+ * (rolling, counted from `organizations.created_by` in the database, so the
+ * limit holds across server instances; `0` disables it).
+ */
+export async function lockAndAssertCreationWindow(tx: Tx, userId: string): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`organization.create:${userId}`}, 0))`);
+  const limit = env.ORGANIZATION_CREATION_DAILY_LIMIT;
+  if (limit <= 0) return;
+  const [recent] = await tx
+    .select({ n: count() })
+    .from(organizations)
+    .where(and(eq(organizations.createdBy, userId), gt(organizations.createdAt, sql`now() - interval '24 hours'`)));
+  if ((recent?.n ?? 0) >= limit) throw new OrganizationCreationLimitError();
+}
+
 /** The canonical request body an Idempotency-Key is bound to. */
 function creationRequestSha256(input: { name: string; slug?: string }): string {
   return createHash("sha256").update(JSON.stringify({ name: input.name, slug: input.slug ?? null })).digest("hex");
@@ -83,10 +111,9 @@ function creationRequestSha256(input: { name: string; slug?: string }): string {
  * Idempotency-Key:
  *  - same key, same body ⇒ the organization it already created (`replayed`);
  *  - same key, different body ⇒ 409, never a second tenant or an overwrite;
- *  - more than `dailyLimit` organizations created by this user in the last
- *    24 hours ⇒ 429 (`0` disables the window).
- * One user's creations are serialized by a transaction-scoped advisory lock,
- * so a double submission cannot slip two rows past the key or the window.
+ *  - over the per-user 24-hour window ⇒ 429 (lockAndAssertCreationWindow).
+ * The key lookup runs under the per-user lock, so a replay is answered even
+ * when the window is full, and concurrent submissions create exactly one row.
  *
  * Creating an organization grants no application access, subscription or
  * contract — those come only from Última Linha (commercial activation).
@@ -97,12 +124,10 @@ export async function createOrganizationIdempotently(input: {
   slug?: string;
   createdBy: string;
   idempotencyKey: string;
-  dailyLimit: number;
 }): Promise<{ organization: typeof organizations.$inferSelect; replayed: boolean }> {
   const requestSha256 = creationRequestSha256(input);
   return db.transaction(async (tx) => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`organization.create:${input.createdBy}`}, 0))`);
-
     const [previous] = await tx
       .select()
       .from(organizationCreationRequests)
@@ -123,14 +148,7 @@ export async function createOrganizationIdempotently(input: {
       return { organization: replayed.organization, replayed: true };
     }
 
-    if (input.dailyLimit > 0) {
-      const [recent] = await tx
-        .select({ n: count() })
-        .from(organizations)
-        .where(and(eq(organizations.createdBy, input.createdBy), gt(organizations.createdAt, sql`now() - interval '24 hours'`)));
-      if ((recent?.n ?? 0) >= input.dailyLimit) throw new OrganizationCreationLimitError();
-    }
-
+    await lockAndAssertCreationWindow(tx, input.createdBy); // same lock again (re-entrant within the transaction)
     const organization = await createOrganization({ name: input.name, slug: input.slug, createdBy: input.createdBy }, tx);
     await tx.insert(organizationCreationRequests).values({
       userId: input.createdBy,

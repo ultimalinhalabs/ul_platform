@@ -19,7 +19,7 @@ import {
 import { ConflictError, ForbiddenError, NotFoundError, OrganizationSuspendedError } from "../../shared/errors.js";
 import { recordAuditEvent } from "../audit/service.js";
 import { findActiveMembership } from "../memberships/service.js";
-import { createOrganization } from "../organizations/service.js";
+import { createOrganization, lockAndAssertCreationWindow } from "../organizations/service.js";
 import { findActivePlatformAdmin } from "../platformAdmins/service.js";
 import { isEmailVerified } from "../users/service.js";
 import { canonicalSha256 } from "./canonicalJson.js";
@@ -293,6 +293,8 @@ export async function acceptProposal(proposalId: string, input: AcceptInput, ide
       organizationId = input.organization.id;
       await assertOwnerOfActiveOrganization(actor.userId, organizationId);
     } else if (input.organization && "create" in input.organization) {
+      // Same per-user guard as POST /v1/organizations: one creation window for every path.
+      await lockAndAssertCreationWindow(tx, actor.userId);
       organizationId = (await createOrganization({ name: input.organization.create.name, createdBy: actor.userId }, tx)).id;
     } else {
       throw new ConflictError("Choose an organization you own, or create one, to accept this proposal");

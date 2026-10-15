@@ -460,6 +460,27 @@ test("rollback: a failure after creating the organization leaves no organization
   assert.equal(accepted.length, 0);
 });
 
+test("the per-user organization creation window also guards acceptance with organization.create (429), never an existing organization", async () => {
+  const previous = env.ORGANIZATION_CREATION_DAILY_LIMIT;
+  env.ORGANIZATION_CREATION_DAILY_LIMIT = 2;
+  try {
+    const r = await person("window");
+    await orgOwnedBy(r.user.id, "b1c-window-1");
+    const owned = await orgOwnedBy(r.user.id, "b1c-window-2"); // the user has now created 2 organizations in 24 h
+    const p = await sentProposal(r.user.email, null);
+    const name = `Janela Org ${randomBytes(3).toString("hex")}`;
+    const refused = await accept(r.token, p, p.essencialId, { organization: { create: { name } } });
+    assert.equal(refused.status, 429, refused.raw);
+    assert.equal(refused.code, "ORGANIZATION_CREATION_LIMIT");
+    assert.equal((await db.select().from(organizations).where(eq(organizations.name, name))).length, 0);
+    assert.equal((await db.select().from(proposalAcceptances).where(eq(proposalAcceptances.proposalId, p.proposalId))).length, 0);
+    const intoOwned = await accept(r.token, p, p.essencialId, { organization: { id: owned } });
+    assert.equal(intoOwned.status, 201, "accepting into an organization the user already owns creates nothing and is not limited");
+  } finally {
+    env.ORGANIZATION_CREATION_DAILY_LIMIT = previous;
+  }
+});
+
 test("tenant isolation of contracts: only an OWNER of THAT organization reads them", async () => {
   const a = await person("tenant-a");
   const orgA = await orgOwnedBy(a.user.id);

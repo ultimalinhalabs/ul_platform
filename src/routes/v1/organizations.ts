@@ -1,5 +1,4 @@
 import { Router } from "express";
-import { env } from "../../config/env.js";
 import { authenticate } from "../../middleware/authenticate.js";
 import { requireOrganizationMembership } from "../../middleware/organizationContext.js";
 import { rateLimit } from "../../middleware/rateLimit.js";
@@ -53,7 +52,6 @@ organizationsRouter.post(
       ...body,
       createdBy: req.auth.userId,
       idempotencyKey: key.data,
-      dailyLimit: env.ORGANIZATION_CREATION_DAILY_LIMIT,
     });
     res.set("Cache-Control", "no-store");
     if (replayed) res.set("Idempotent-Replayed", "true");

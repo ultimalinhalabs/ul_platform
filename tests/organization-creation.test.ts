@@ -21,6 +21,7 @@ import {
 } from "../src/db/schema/index.js";
 import { seed } from "../src/db/seed/index.js";
 import { EXPECTED_ISSUER } from "../src/integrations/supabase/jwt.js";
+import { slugSuffix } from "../src/modules/organizations/service.js";
 import { createTestUser, deleteTestUser } from "./helpers.js";
 
 /**
@@ -261,11 +262,75 @@ test("the per-user 24h window (ORGANIZATION_CREATION_DAILY_LIMIT) refuses with 4
   }
 });
 
-test("the window is off by default (0): creation is not capped", async () => {
-  assert.equal(env.ORGANIZATION_CREATION_DAILY_LIMIT, 0);
-  const { user, token } = await signedIn("org-window-off");
-  for (let i = 1; i <= 3; i++) assert.equal((await create(token, { name: `Sem Janela ${i}` }, newKey())).status, 201);
-  assert.equal((await organizationsCreatedBy(user.id)).length, 3);
+/** Organizations "created" by the user at a given age — fixtures for the rolling window, without spending the burst limiter. */
+async function priorOrganizations(userId: string, n: number, ageSql = sql`now()`) {
+  for (let i = 0; i < n; i++) {
+    const slug = `janela-previa-${randomUUID()}`;
+    await db.insert(organizations).values({ name: slug, slug, createdBy: userId, createdAt: ageSql as unknown as Date });
+  }
+}
+
+test("the default window is 10 organizations per user per rolling 24 h: the 11th is refused", async () => {
+  assert.equal(env.ORGANIZATION_CREATION_DAILY_LIMIT, 10, "owner's initial proposal (2026-10-15)");
+  const { user, token } = await signedIn("org-window-default");
+  await priorOrganizations(user.id, 9);
+  assert.equal((await create(token, { name: "Décima" }, newKey())).status, 201);
+  const eleventh = await create(token, { name: "Décima Primeira" }, newKey());
+  assert.equal(eleventh.status, 429);
+  assert.equal(eleventh.code, "ORGANIZATION_CREATION_LIMIT");
+  assert.equal((await organizationsCreatedBy(user.id)).length, 10);
+});
+
+test("the window is rolling: organizations created more than 24 h ago do not count", async () => {
+  const { user, token } = await signedIn("org-window-rolling");
+  await priorOrganizations(user.id, 10, sql`now() - interval '25 hours'`);
+  assert.equal((await create(token, { name: "Depois da Janela" }, newKey())).status, 201);
+  await priorOrganizations(user.id, 9, sql`now() - interval '23 hours'`);
+  assert.equal((await create(token, { name: "Dentro da Janela" }, newKey())).status, 429);
+});
+
+test("ORGANIZATION_CREATION_DAILY_LIMIT=0 disables the window", async () => {
+  const previous = env.ORGANIZATION_CREATION_DAILY_LIMIT;
+  env.ORGANIZATION_CREATION_DAILY_LIMIT = 0;
+  try {
+    const { user, token } = await signedIn("org-window-off");
+    await priorOrganizations(user.id, 12);
+    assert.equal((await create(token, { name: "Sem Janela" }, newKey())).status, 201);
+    assert.equal((await organizationsCreatedBy(user.id)).length, 13);
+  } finally {
+    env.ORGANIZATION_CREATION_DAILY_LIMIT = previous;
+  }
+});
+
+test("a generated slug that collides is retried with a new suffix — the organization is still created", async (t) => {
+  const { user, token } = await signedIn("org-slug-collision");
+  const taken = `colisao-${randomUUID().slice(0, 6)}`;
+  await db.insert(organizations).values({ name: "Ocupada", slug: `colisao-forcada-${taken}`, createdBy: null });
+  const suffixes = [taken, taken, "livre1"];
+  t.mock.method(slugSuffix, "next", () => suffixes.shift() ?? "livre2");
+  const r = await create(token, { name: "Colisão Forçada" }, newKey());
+  assert.equal(r.status, 201, "two collisions, recovered on the third attempt");
+  assert.equal(r.data!.slug, "colisao-forcada-livre1");
+  assert.equal((await organizationsCreatedBy(user.id)).length, 1);
+  await db.delete(organizations).where(eq(organizations.slug, `colisao-forcada-${taken}`));
+});
+
+test("when every slug attempt collides, nothing is half-created and the key stays free for a retry", async (t) => {
+  const { user, token } = await signedIn("org-slug-exhausted");
+  const taken = `esgotado-${randomUUID().slice(0, 6)}`;
+  await db.insert(organizations).values({ name: "Ocupada", slug: `sem-saida-${taken}`, createdBy: null });
+  const key = newKey();
+  const mocked = t.mock.method(slugSuffix, "next", () => taken);
+  const r = await create(token, { name: "Sem Saída" }, key);
+  assert.equal(r.status, 500);
+  assert.equal(mocked.mock.callCount(), 5, "bounded retries");
+  assert.equal((await organizationsCreatedBy(user.id)).length, 0);
+  const [requests] = await db.select({ n: count() }).from(organizationCreationRequests).where(eq(organizationCreationRequests.userId, user.id));
+  assert.equal(requests!.n, 0);
+  mocked.mock.restore();
+  const retry = await create(token, { name: "Sem Saída" }, key);
+  assert.equal(retry.status, 201, "the same key succeeds once a free slug exists");
+  await db.delete(organizations).where(eq(organizations.slug, `sem-saida-${taken}`));
 });
 
 test("a burst of more than 10 requests in 10 minutes from one user is refused with 429 RATE_LIMITED", async () => {

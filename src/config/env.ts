@@ -45,10 +45,11 @@ const envSchema = z.object({
   /**
    * Maximum organizations one user may create in a rolling 24 hours
    * (`POST /v1/organizations`; counted from `organizations.created_by`, so it
-   * holds across instances). `0` disables the window — the default until the
-   * owner fixes the value; the per-process burst limiter still applies.
+   * holds across instances, and applies to every creation path — the route
+   * and proposal acceptance with `organization.create`). Default 10 (owner's
+   * initial proposal, 2026-10-15); `0` disables the window.
    */
-  ORGANIZATION_CREATION_DAILY_LIMIT: z.coerce.number().int().min(0).default(0),
+  ORGANIZATION_CREATION_DAILY_LIMIT: z.coerce.number().int().min(0).default(10),
 });
 
 const parsed = envSchema.safeParse(process.env);
