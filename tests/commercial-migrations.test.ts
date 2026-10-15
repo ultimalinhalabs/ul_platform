@@ -111,7 +111,7 @@ test("the journal continues at 0015, keeps 0015–0019 unchanged and only append
     ["0015_commercial_permissions", "0016_commercial_events_and_terms", "0017_proposals", "0018_acceptances_and_contracts", "0019_entitlement_grants"],
   );
   assert.equal(journal[14]!.tag, "0014_organization_application_access");
-  assert.deepEqual(journal.slice(20).map((e) => e.tag), ["0020_managed_credential_provisioning", "0021_landing_leads", "0022_organization_creation_idempotency", "0023_commercial_payments", "0024_self_service_catalog"]);
+  assert.deepEqual(journal.slice(20).map((e) => e.tag), ["0020_managed_credential_provisioning", "0021_landing_leads", "0022_organization_creation_idempotency", "0023_commercial_payments", "0024_self_service_catalog", "0025_organization_invitations"]);
 });
 
 test("from zero and in sequence (0014 → Supabase-like default grants → 0019) produce the same schema; zero anon/authenticated grants", async () => {
@@ -157,7 +157,7 @@ test("re-running the migrator is a no-op (replay/idempotency)", async () => {
     assert.equal(after!.n, before!.n);
     assert.equal(String(after!.last), String(before!.last));
     assert.equal(await schemaSignature(DB_ZERO), signatureBefore);
-    assert.equal(before!.n, 25);
+    assert.equal(before!.n, 26);
   } finally {
     await sql.end();
   }

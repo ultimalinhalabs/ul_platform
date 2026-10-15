@@ -55,6 +55,8 @@ const envSchema = z.object({
    * acceptance. A technical default (24 h), not a commercial condition; price/period/terms come from the catalog.
    */
   SELF_SERVICE_OFFER_VALIDITY_HOURS: z.coerce.number().int().min(1).max(720).default(24),
+  /** Migration 0025 — how long a team invitation stays open (technical default: 7 days). */
+  INVITATION_VALIDITY_DAYS: z.coerce.number().int().min(1).max(90).default(7),
   /** Worker — how often active contracts past their end are persisted as expired (default 5 min). */
   CONTRACT_EXPIRY_SWEEP_INTERVAL_MS: z.coerce.number().int().min(10_000).default(300_000),
 });
