@@ -207,7 +207,7 @@ test("T15 — the client cannot set price, period or limits: extra fields are re
   const [c] = await db.select().from(contracts).where(eq(contracts.id, acc.data.contract.id));
   assert.equal(c!.totalMinor.toString(), TEST_PRICE);
   assert.equal((await configure({ ...selfService, termsTemplateId: approvedTermsId })).status, 200);
-  const pay = await call("POST", `/platform/contracts/${c!.id}/payments`, admin.token, { amountMinor: "9999999", currency: "AOA", method: "bank_transfer", externalReference: `TRF-${randomUUID()}`, receivedAt: new Date().toISOString() }, { "idempotency-key": `p-${randomUUID()}` });
+  const pay = await call("POST", `/platform/contracts/${c!.id}/payments`, admin.token, { amountMinor: "9999999", currency: "AOA", method: "bank_transfer", externalReference: `TRF-${randomUUID()}`, receivedAt: new Date().toISOString(), evidenceReference: "REC-0001" }, { "idempotency-key": `p-${randomUUID()}` });
   assert.equal(pay.code, "PAYMENT_AMOUNT_MISMATCH", "the payment must match the contract, not the current catalog");
 });
 

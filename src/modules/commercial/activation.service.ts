@@ -194,7 +194,33 @@ export async function getPlatformContract(contractId: string, executor: Executor
   const [version] = contract.currentVersionId ? await executor.select().from(contractVersions).where(eq(contractVersions.id, contract.currentVersionId)) : [];
   const items = version ? await executor.select().from(contractItems).where(eq(contractItems.contractVersionId, version.id)).orderBy(asc(contractItems.sort), asc(contractItems.createdAt)) : [];
   const grants = await executor.select().from(entitlementGrants).where(eq(entitlementGrants.contractId, contract.id)).orderBy(asc(entitlementGrants.createdAt));
-  return { ...contractSummaryDto(contract, version ?? null), items: items.map(contractItemDto), grants: grants.map(grantDto) };
+  // Migration 0023 — the confirmed payment, in full for UL administrators (reference, evidence pointer, who confirmed).
+  const [payment] = await executor
+    .select()
+    .from(commercialPayments)
+    .where(and(eq(commercialPayments.contractId, contract.id), eq(commercialPayments.status, "confirmed")))
+    .limit(1);
+  return {
+    ...contractSummaryDto(contract, version ?? null),
+    items: items.map(contractItemDto),
+    grants: grants.map(grantDto),
+    payment: payment
+      ? {
+          id: payment.id,
+          status: payment.status,
+          source: payment.source,
+          method: payment.method,
+          amountMinor: payment.amountMinor.toString(),
+          currency: payment.currency,
+          externalReference: payment.externalReference,
+          evidenceReference: payment.evidenceReference,
+          receivedAt: payment.receivedAt.toISOString(),
+          confirmedAt: payment.confirmedAt.toISOString(),
+          confirmedByUserId: payment.confirmedByUserId,
+          confirmedByApiKeyId: payment.confirmedByApiKeyId,
+        }
+      : null,
+  };
 }
 
 /** Read-only: what activation would do, and why it would be blocked. No writes, no events. */

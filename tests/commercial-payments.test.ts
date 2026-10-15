@@ -197,6 +197,25 @@ test("T06 — amount or currency different from the contract: rejected (409 PAYM
   assert.equal((await paymentsOf(contractId)).length, 0);
 });
 
+test("manual methods are the approved ones only (bank_transfer, multicaixa_express) and the evidence is mandatory", async () => {
+  const { contractId } = await pendingContract();
+  for (const method of ["cash", "multicaixa_reference", "micha_express"]) {
+    assert.equal((await manual(contractId, paid({ method }))).status, 400, method);
+  }
+  const { evidenceReference: _omit, ...withoutEvidence } = paid();
+  assert.equal((await manual(contractId, withoutEvidence)).status, 400, "evidence required");
+  assert.equal((await manual(contractId, paid({ evidenceReference: "  " }))).status, 400, "blank evidence");
+  assert.equal((await paymentsOf(contractId)).length, 0);
+  const mcx = await manual(contractId, paid({ method: "multicaixa_express", externalReference: `MCX-${randomUUID()}`, evidenceReference: "REC-MCX-1" }));
+  assert.equal(mcx.status, 201, mcx.raw);
+  assert.equal(mcx.data.payment.method, "multicaixa_express");
+  // The administrators' contract view carries the full payment record.
+  const view = await call("GET", `/platform/contracts/${contractId}`, admin.token);
+  assert.equal(view.data.payment.method, "multicaixa_express");
+  assert.equal(view.data.payment.evidenceReference, "REC-MCX-1");
+  assert.equal(view.data.payment.confirmedByUserId, admin.user.id);
+});
+
 test("T08/T19/T01 — an authorized admin confirms the exact amount: recorded with evidence and audit, then the SAME activation path activates", async () => {
   const { contractId, orgId, owner } = await pendingContract();
   const body = paid();

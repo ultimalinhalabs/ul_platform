@@ -29,21 +29,37 @@ import { recordCommercialEvent } from "./events.js";
  * recorded and the contract pending, and is reported back.
  */
 
+/**
+ * Owner decision (2026-10-15): a UL administrator may confirm manually only these methods, each with its
+ * evidence — bank transfer (transfer reference + internal receipt id) and Multicaixa Express (operation id +
+ * internal receipt id). Cash and Multicaixa reference payments are not accepted manually.
+ */
+export const MANUAL_PAYMENT_METHODS = ["bank_transfer", "multicaixa_express"] as const;
+
+const amountMinorSchema = z.string().regex(/^\d{1,18}$/, "amountMinor must be an integer string of minor units");
+
 export const confirmPaymentSchema = z
   .object({
-    amountMinor: z.string().regex(/^\d{1,18}$/, "amountMinor must be an integer string of minor units"),
+    amountMinor: amountMinorSchema,
     currency: z.string().regex(/^[A-Z]{3}$/),
-    method: z.string().regex(/^[a-z][a-z0-9_]{1,39}$/, "method must be a short lowercase code, e.g. bank_transfer"),
+    method: z.enum(MANUAL_PAYMENT_METHODS),
+    /** Transfer reference (bank_transfer) or operation id (multicaixa_express). */
     externalReference: z.string().trim().min(1).max(200),
     receivedAt: z.coerce.date(),
-    evidenceReference: z.string().trim().min(1).max(500).optional(),
+    /** Internal receipt id — mandatory evidence of a manual confirmation. */
+    evidenceReference: z.string().trim().min(1).max(500),
   })
   .strict();
 export type ConfirmPaymentInput = z.infer<typeof confirmPaymentSchema>;
 
-export const confirmIntegrationPaymentSchema = confirmPaymentSchema
-  .omit({ method: true, evidenceReference: true })
-  .extend({ contractId: z.string().uuid() })
+export const confirmIntegrationPaymentSchema = z
+  .object({
+    contractId: z.string().uuid(),
+    amountMinor: amountMinorSchema,
+    currency: z.string().regex(/^[A-Z]{3}$/),
+    externalReference: z.string().trim().min(1).max(200),
+    receivedAt: z.coerce.date(),
+  })
   .strict();
 
 type PaymentRow = typeof commercialPayments.$inferSelect;
