@@ -50,6 +50,13 @@ const envSchema = z.object({
    * initial proposal, 2026-10-15); `0` disables the window.
    */
   ORGANIZATION_CREATION_DAILY_LIMIT: z.coerce.number().int().min(0).default(10),
+  /**
+   * Migration 0024 — how long a self-service offer (the frozen proposal built from the catalog) stays open for
+   * acceptance. A technical default (24 h), not a commercial condition; price/period/terms come from the catalog.
+   */
+  SELF_SERVICE_OFFER_VALIDITY_HOURS: z.coerce.number().int().min(1).max(720).default(24),
+  /** Worker — how often active contracts past their end are persisted as expired (default 5 min). */
+  CONTRACT_EXPIRY_SWEEP_INTERVAL_MS: z.coerce.number().int().min(10_000).default(300_000),
 });
 
 const parsed = envSchema.safeParse(process.env);

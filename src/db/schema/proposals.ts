@@ -39,6 +39,8 @@ export const PROPOSAL_STATUSES = ["draft", "sent", "viewed", "negotiation", "acc
 export const PROPOSAL_VERSION_STATUSES = ["draft", "sent", "superseded", "withdrawn"] as const;
 export const COMMERCIAL_ITEM_KINDS = ["application_plan", "service", "support", "one_off", "custom"] as const;
 export const BILLING_PERIODS = ["one_time", "monthly", "yearly"] as const;
+/** Migration 0024 — how the proposal came to be: prepared by UL (assisted) or generated from the catalog for a client (self_service). */
+export const PROPOSAL_CHANNELS = ["assisted", "self_service"] as const;
 
 export const proposals = pgTable(
   "proposals",
@@ -59,10 +61,18 @@ export const proposals = pgTable(
     createdBy: uuid("created_by")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    channel: text("channel", { enum: PROPOSAL_CHANNELS }).notNull().default("assisted"),
+    /** Self-service only: the client's Idempotency-Key, unique per creator — a retried request returns the same contracting. */
+    requestIdempotencyKey: text("request_idempotency_key"),
     ...timestamps,
   },
   (table) => [
     unique("proposals_number_unique").on(table.number),
+    check("proposals_channel_check", sql`${table.channel} in ('assisted', 'self_service')`),
+    uniqueIndex("proposals_request_idempotency_unique")
+      .on(table.createdBy, table.requestIdempotencyKey)
+      .where(sql`${table.requestIdempotencyKey} is not null`),
+    check("proposals_request_idempotency_check", sql`${table.requestIdempotencyKey} is null or length(${table.requestIdempotencyKey}) between 8 and 200`),
     index("proposals_status_idx").on(table.status),
     index("proposals_organization_idx").on(table.organizationId),
     index("proposals_recipient_email_idx").on(sql`lower(${table.recipientEmail})`),
@@ -157,11 +167,14 @@ export const proposalItems = pgTable(
     lineTotalMinor: bigint("line_total_minor", { mode: "bigint" }).notNull(),
     billingPeriod: text("billing_period", { enum: BILLING_PERIODS }).notNull().default("one_time"),
     durationMonths: integer("duration_months"),
+    /** Migration 0024 — a period in days (e.g. "30 days, not a calendar month"); never together with duration_months. */
+    durationDays: integer("duration_days"),
     entitlementSpec: jsonb("entitlement_spec"),
     ...timestamps,
   },
   (table) => [
     index("proposal_items_option_idx").on(table.optionId),
+    check("proposal_items_duration_days_check", sql`${table.durationDays} is null or (${table.durationDays} > 0 and ${table.durationMonths} is null)`),
     check("proposal_items_kind_check", sql`${table.kind} in ('application_plan', 'service', 'support', 'one_off', 'custom')`),
     check("proposal_items_plan_check", sql`${table.kind} <> 'application_plan' or (${table.planId} is not null and ${table.applicationId} is not null)`),
     check("proposal_items_quantity_check", sql`${table.quantity} > 0`),

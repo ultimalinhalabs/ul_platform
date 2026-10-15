@@ -98,7 +98,7 @@ async function endRequestInTx(tx: Tx, pr: PR, reason: string, actor: Actor): Pro
  */
 export async function requestInitialProvisioningInTx(
   tx: Tx,
-  input: { organizationId: string; applicationId: string; applicationKey: string; contractId: string; entitlementGrantId: string; actorUserId: string },
+  input: { organizationId: string; applicationId: string; applicationKey: string; contractId: string; entitlementGrantId: string; actorUserId: string | null },
 ) {
   if (!INTEGRATION_APPLICATIONS[input.applicationKey]) return null;
   const authz = await commercialAuthorization(tx, input.organizationId, input.applicationId);
@@ -117,7 +117,7 @@ export async function requestInitialProvisioningInTx(
     .onConflictDoNothing()
     .returning();
   if (!created) return null;
-  await audit(tx, created, "integration.credential.requested", { userId: input.actorUserId, label: "system:contract_activation" }, { contractId: input.contractId });
+  await audit(tx, created, "integration.credential.requested", { userId: input.actorUserId ?? undefined, label: "system:contract_activation" }, { contractId: input.contractId });
   return created;
 }
 
@@ -341,7 +341,7 @@ export async function requestRekey(activeRequestId: string, actorUserId: string)
  * Not required for safety — the runtime authorization already refuses the credential once the access or
  * the grant is gone — but it keeps the stored state honest.
  */
-export async function endProvisioningForAccessLossInTx(tx: Tx, organizationId: string, applicationId: string, actorUserId: string, reason: string) {
+export async function endProvisioningForAccessLossInTx(tx: Tx, organizationId: string, applicationId: string, actorUserId: string | null, reason: string) {
   const open = await tx
     .select()
     .from(credentialProvisioningRequests)
@@ -353,7 +353,7 @@ export async function endProvisioningForAccessLossInTx(tx: Tx, organizationId: s
       ),
     )
     .for("update");
-  for (const pr of open) await endRequestInTx(tx, pr, reason, { userId: actorUserId, label: "system:access_revoked" });
+  for (const pr of open) await endRequestInTx(tx, pr, reason, { userId: actorUserId ?? undefined, label: "system:access_revoked" });
 }
 
 async function applicationKeyOf(applicationId: string) {

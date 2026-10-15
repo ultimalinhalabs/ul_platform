@@ -35,7 +35,7 @@ type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Executor = typeof db | Tx;
 
 /** Idempotent: grants (or re-activates) access. Platform-admin operation. */
-export async function grantApplicationAccess(input: { organizationId: string; applicationKey: string; actorUserId: string }, executor: Executor = db) {
+export async function grantApplicationAccess(input: { organizationId: string; applicationKey: string; actorUserId: string | null }, executor: Executor = db) {
   const { organizationId, organizationStatus, application } = await resolveOrganizationAndApplication(
     input.organizationId,
     input.applicationKey,
@@ -52,7 +52,7 @@ export async function grantApplicationAccess(input: { organizationId: string; ap
     })
     .returning();
   await recordAuditEvent({
-    actorUserId: input.actorUserId,
+    actorUserId: input.actorUserId ?? undefined,
     organizationId,
     applicationId: application.id,
     action: "organization.application_access.granted",
@@ -65,7 +65,7 @@ export async function grantApplicationAccess(input: { organizationId: string; ap
 
 /** Revocation is a status change, never a delete. */
 export async function revokeApplicationAccess(
-  input: { organizationId: string; applicationKey: string; actorUserId: string },
+  input: { organizationId: string; applicationKey: string; actorUserId: string | null },
   executor: Executor = db,
 ): Promise<{ id: string; organizationId: string; applicationKey: string; status: string }> {
   // D2-B — the access revocation and the end of the integration's managed credential are one atomic operation.
@@ -84,7 +84,7 @@ export async function revokeApplicationAccess(
     .returning();
   if (!row) throw new NotFoundError("No active access to revoke");
   await recordAuditEvent({
-    actorUserId: input.actorUserId,
+    actorUserId: input.actorUserId ?? undefined,
     organizationId,
     applicationId: application.id,
     action: "organization.application_access.revoked",

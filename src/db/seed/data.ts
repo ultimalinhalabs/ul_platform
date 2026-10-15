@@ -65,6 +65,8 @@ export const SERVICE_SCOPES = [
   // D2-B — provisioner-only: valid solely on a PLATFORM_SERVICE credential with purpose PROVISIONER (modules/apiKeys/service.ts).
   { key: "credential.provision", description: "Issue integration credentials for open provisioning requests of the credential's own application (provisioner only)." },
   { key: "lead.create", description: "Submit a commercial contact request (lead) addressed to Última Linha." },
+  // Migration 0023 — the payments application confirms that a contract's amount was received (POST /v1/service/payments/confirmations).
+  { key: "payment.confirm", description: "Confirm that the amount of a UL contract was received (platform service credential of the payments application)." },
 ] as const;
 
 /**
@@ -79,7 +81,7 @@ export const SERVICE_SCOPES = [
  */
 export const APPLICATION_SERVICE_SCOPES: Record<string, string[]> = {
   NA_PISTA: ["event.publish", "usage.write", "usage.read", "catalog.read", "catalog.write", "customer.read", "credential.provision"],
-  MICHA_EXPRESS: ["event.publish", "usage.write", "usage.read", "payment.create", "payment.read"],
+  MICHA_EXPRESS: ["event.publish", "usage.write", "usage.read", "payment.create", "payment.read", "payment.confirm"],
   FOI: ["event.publish", "usage.write", "usage.read", "catalog.read"],
   QUALE_A_DICA: ["event.publish", "usage.write", "usage.read", "catalog.read", "report.generate"],
   HOJE_TEM: ["event.publish", "usage.write", "usage.read", "report.generate"],
@@ -224,6 +226,8 @@ export const PLATFORM_PERMISSIONS = [
   { key: "platform.proposal.send", description: "Send a proposal version (freeze it) and issue/revoke its access links." },
   { key: "platform.contract.manage", description: "Manage contracts generated from accepted proposals." },
   { key: "platform.entitlement.grant", description: "Activate/revoke entitlement grants (creates subscriptions/application access)." },
+  // Migration 0023 — manual payment confirmation (evidence + audit); activation never skips the payment condition.
+  { key: "platform.payment.confirm", description: "Record a manual payment confirmation for a contract (with evidence; audited)." },
 ] as const;
 
 export const PLATFORM_ROLE_PERMISSIONS: Record<(typeof PLATFORM_ROLES)[number]["key"], string[]> = {

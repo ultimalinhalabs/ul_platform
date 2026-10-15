@@ -1,13 +1,14 @@
 import { sql } from "drizzle-orm";
 import { env } from "./config/env.js";
 import { db, queryClient } from "./db/index.js";
+import { expireDueContracts } from "./modules/commercial/activation.service.js";
 import { startWebhookRetryWorker } from "./modules/webhooks/delivery.js";
 import { logger } from "./shared/logger.js";
 
 /**
  * Fase 5.2 — the persistent worker process (Railway in production; `npm run
- * dev:worker` locally). It runs ONLY the webhook retry engine: no HTTP
- * server. All retry state lives in PostgreSQL (`webhook_deliveries`), claims
+ * dev:worker` locally). It runs the webhook retry engine and (migration 0023)
+ * the contract expiry sweep: no HTTP server. All retry state lives in PostgreSQL (`webhook_deliveries`), claims
  * use FOR UPDATE SKIP LOCKED + a lease, so restarts, redeploys and several
  * replicas are safe.
  */
@@ -27,6 +28,17 @@ try {
 }
 
 const worker = startWebhookRetryWorker();
+
+// Persists contract/grant expiry (access already stops at read time; this keeps the stored state honest).
+// Row-locked per contract with SKIP LOCKED, so several replicas are safe; errors are logged, never fatal.
+const expiryTimer = setInterval(() => {
+  void expireDueContracts()
+    .then(({ expired }) => {
+      if (expired.length > 0) logger.info("Expired contracts", { event: "commercial.contracts.expired", count: expired.length });
+    })
+    .catch((error) => logger.error("Contract expiry sweep failed", { event: "commercial.expiry.error", errorCode: error instanceof Error ? error.name : "unknown" }));
+}, env.CONTRACT_EXPIRY_SWEEP_INTERVAL_MS);
+expiryTimer.unref();
 logger.info("UL Platform worker started", { event: "worker.started", workerId: worker.workerId, environment: env.APP_ENV });
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
@@ -35,6 +47,7 @@ let shuttingDown = false;
 function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
+  clearInterval(expiryTimer);
   logger.info("Worker shutdown signal received", { event: "worker.shutdown.start", signal, workerId: worker.workerId });
 
   const forceExitTimer = setTimeout(() => {

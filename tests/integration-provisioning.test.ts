@@ -22,7 +22,7 @@ import {
 import { seed } from "../src/db/seed/index.js";
 import { EXPECTED_ISSUER } from "../src/integrations/supabase/jwt.js";
 import { createOrganizationApiKey } from "../src/modules/apiKeys/service.js";
-import { createTestOrganization, createTestUser, grantTestApplicationAccess } from "./helpers.js";
+import { createTestOrganization, createTestUser, grantTestApplicationAccess, confirmTestPayment } from "./helpers.js";
 
 /**
  * D2-B MVP — managed integration credential provisioning, end to end over HTTP on the disposable
@@ -97,7 +97,7 @@ async function activeNaPistaContract() {
   const acc = await call("POST", `/proposals/${created.data.id}/acceptance`, owner.token, { versionId: created.data.versions[0].id, optionId, contentSha256: sent.data.contentSha256, signerName: "Signatário", consent: true }, { "idempotency-key": `k-${randomUUID()}` });
   assert.equal(acc.status, 201, acc.raw);
   const contractId = acc.data.contract.id as string;
-  const act = await call("POST", `/platform/contracts/${contractId}/activation`, admin.token);
+  const act = await (await confirmTestPayment(contractId, admin.user.id), call("POST", `/platform/contracts/${contractId}/activation`, admin.token));
   assert.equal(act.status, 201, act.raw);
   const [pr] = await db.select().from(credentialProvisioningRequests).where(eq(credentialProvisioningRequests.organizationId, org.id));
   assert.ok(pr, "activation created the provisioning request");

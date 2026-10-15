@@ -88,10 +88,12 @@ export const createItemSchema = z
     unitPriceMinor: minorAmountSchema,
     billingPeriod: z.enum(BILLING_PERIODS).default("one_time"),
     durationMonths: z.number().int().positive().max(120).nullable().optional(),
+    durationDays: z.number().int().positive().max(3660).nullable().optional(),
     entitlementSpec: entitlementSpecSchema,
     sort: z.number().int().min(0).max(1000).default(0),
   })
-  .strict();
+  .strict()
+  .refine((i) => !(i.durationMonths != null && i.durationDays != null), { message: "Use durationMonths or durationDays, not both" });
 
 export const updateItemSchema = z
   .object({
@@ -104,11 +106,13 @@ export const updateItemSchema = z
     unitPriceMinor: minorAmountSchema.optional(),
     billingPeriod: z.enum(BILLING_PERIODS).optional(),
     durationMonths: z.number().int().positive().max(120).nullable().optional(),
+    durationDays: z.number().int().positive().max(3660).nullable().optional(),
     entitlementSpec: entitlementSpecSchema,
     sort: z.number().int().min(0).max(1000).optional(),
   })
   .strict()
-  .refine(atLeastOne, { message: "At least one field must be provided" });
+  .refine(atLeastOne, { message: "At least one field must be provided" })
+  .refine((i) => !(i.durationMonths != null && i.durationDays != null), { message: "Use durationMonths or durationDays, not both" });
 
 export const createAccessLinkSchema = z
   .object({

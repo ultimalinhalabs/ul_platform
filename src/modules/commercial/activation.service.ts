@@ -1,7 +1,8 @@
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, lte, ne, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import {
   applications,
+  commercialPayments,
   contractItems,
   contracts,
   contractVersions,
@@ -36,7 +37,12 @@ import { contractItemDto, contractSummaryDto, grantDto } from "./serializers.js"
  *  - an application_plan needs an explicit duration (no accidental
  *    open-ended subscription); an entitlementSpec must be exactly what the
  *    plan's runtime entitlements provide (no overrides exist yet);
- *  - the tenant ALWAYS comes from the contract, never from the request.
+ *  - the tenant ALWAYS comes from the contract, never from the request;
+ *  - migration 0023 — NEVER without a confirmed payment of the contract's
+ *    exact amount and currency (commercial_payments): the three activation
+ *    conditions are organization active + terms accepted and recorded (the
+ *    contract only exists from an acceptance) + payment confirmed. Both
+ *    channels (assisted and self-service) go through this same function.
  */
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -46,6 +52,7 @@ type ContractRow = typeof contracts.$inferSelect;
 export type ActivationBlockerCode =
   | "CONTRACT_NOT_ACTIVATABLE"
   | "ORGANIZATION_SUSPENDED"
+  | "PAYMENT_NOT_CONFIRMED"
   | "DUPLICATE_APPLICATION"
   | "APPLICATION_INACTIVE"
   | "PLAN_INACTIVE"
@@ -54,6 +61,19 @@ export type ActivationBlockerCode =
   | "SUBSCRIPTION_CONFLICT"
   | "APPLICATION_ACCESS_CONFLICT"
   | "GRANT_CONFLICT";
+
+/**
+ * Who activates: a platform administrator (the explicit route, or right after
+ * they confirm a payment manually), or the platform itself right after an
+ * authenticated payment integration confirmed the payment (`apiKeyId`).
+ */
+export type ActivationActor = CommercialActor | { system: true; apiKeyId: string; requestId?: string };
+
+function actorParts(actor: ActivationActor) {
+  return "userId" in actor
+    ? { actorType: "platform_admin" as const, actorUserId: actor.userId as string | null, apiKeyId: null as string | null, requestId: actor.requestId }
+    : { actorType: "system" as const, actorUserId: null as string | null, apiKeyId: actor.apiKeyId as string | null, requestId: actor.requestId };
+}
 
 export interface ActivationBlocker {
   code: ActivationBlockerCode;
@@ -92,6 +112,12 @@ async function analyze(executor: Executor, contract: ContractRow) {
   if (contract.status !== "pending_activation") blockers.push({ code: "CONTRACT_NOT_ACTIVATABLE", message: `A ${contract.status} contract cannot be activated` });
   const [org] = await executor.select({ status: organizations.status }).from(organizations).where(eq(organizations.id, contract.organizationId));
   if (org?.status !== "active") blockers.push({ code: "ORGANIZATION_SUSPENDED", message: "The contract's organization is not active" });
+  const [payment] = await executor
+    .select()
+    .from(commercialPayments)
+    .where(and(eq(commercialPayments.contractId, contract.id), eq(commercialPayments.status, "confirmed")))
+    .limit(1);
+  if (!payment) blockers.push({ code: "PAYMENT_NOT_CONFIRMED", message: "The contract's payment has not been confirmed" });
 
   const [version] = contract.currentVersionId ? await executor.select().from(contractVersions).where(eq(contractVersions.id, contract.currentVersionId)) : [];
   if (!version) throw new ConflictError("The contract has no current version");
@@ -120,6 +146,7 @@ async function analyze(executor: Executor, contract: ContractRow) {
       application: application ? { key: application.key, name: application.name, status: application.status } : null,
       plan: plan ? { key: plan.key, name: plan.name, status: plan.status } : null,
       durationMonths: item.durationMonths,
+      durationDays: item.durationDays,
       billingPeriod: item.billingPeriod,
       entitlementSpec: item.entitlementSpec,
       specSupported: null as boolean | null,
@@ -131,7 +158,7 @@ async function analyze(executor: Executor, contract: ContractRow) {
       if ((appCount.get(application.id) ?? 0) > 1) push("DUPLICATE_APPLICATION", `More than one application_plan item for ${application.key}`);
       if (application.status !== "ACTIVE") push("APPLICATION_INACTIVE", `Application ${application.key} is not active`);
       if (plan.status !== "ACTIVE") push("PLAN_INACTIVE", `Plan ${plan.key} is not active`);
-      if (item.durationMonths === null) push("DURATION_REQUIRED", `"${item.title}" has no duration: an application_plan needs an explicit durationMonths to be activated`);
+      if (item.durationMonths === null && item.durationDays === null) push("DURATION_REQUIRED", `"${item.title}" has no duration: an application_plan needs an explicit durationMonths or durationDays to be activated`);
       const planValues = new Map(planValueRows.filter((v) => v.planId === plan.id).map((v) => [v.key, v.value as unknown]));
       analysis.specSupported = specSupported(item.entitlementSpec, planValues);
       if (!analysis.specSupported) push("ENTITLEMENT_SPEC_UNSUPPORTED", `"${item.title}" promises entitlements plan ${plan.key} does not provide`);
@@ -159,7 +186,7 @@ async function analyze(executor: Executor, contract: ContractRow) {
     }
     items.push(analysis);
   }
-  return { version, rows, items, blockers };
+  return { version, rows, items, blockers, payment: payment ?? null };
 }
 
 export async function getPlatformContract(contractId: string, executor: Executor = db) {
@@ -173,9 +200,10 @@ export async function getPlatformContract(contractId: string, executor: Executor
 /** Read-only: what activation would do, and why it would be blocked. No writes, no events. */
 export async function previewActivation(contractId: string) {
   const contract = await loadContract(db, contractId, false);
-  const { items, blockers } = await analyze(db, contract);
+  const { items, blockers, payment } = await analyze(db, contract);
   return {
     contract: { id: contract.id, number: contract.number, status: contract.status, organizationId: contract.organizationId },
+    payment: payment ? { id: payment.id, source: payment.source, confirmedAt: payment.confirmedAt.toISOString() } : null,
     activatable: blockers.length === 0,
     blockers,
     items,
@@ -193,23 +221,27 @@ function blockerError(b: ActivationBlocker): AppError {
  * application access; then the contract becomes `active`. All or nothing.
  * Re-activating an `active` contract returns it unchanged (idempotent).
  */
-export async function activateContract(contractId: string, actor: CommercialActor) {
+export async function activateContract(contractId: string, activationActor: ActivationActor) {
+  const who = actorParts(activationActor);
   const created = await db.transaction(async (tx: Tx) => {
     const contract = await loadContract(tx, contractId, true);
     if (contract.status === "active") return false;
-    const { version, rows, blockers } = await analyze(tx, contract);
-    if (blockers.length > 0) throw blockerError(blockers[0]!);
+    const { version, rows, blockers, payment } = await analyze(tx, contract);
+    if (blockers.length > 0 || !payment) throw blockerError(blockers[0]!);
 
     // One timestamp for the whole activation (transaction time), so every grant/subscription/contract shares it.
     const nowRows = (await tx.execute(sql`select now() as now`)) as unknown as Array<{ now: Date | string }>;
     const startsAt = new Date(nowRows[0]!.now);
     const endsAll: Date[] = [];
-    const base = { organizationId: contract.organizationId, actorType: "platform_admin" as const, actorUserId: actor.userId, correlationId: actor.requestId };
+    const base = { organizationId: contract.organizationId, actorType: who.actorType, actorUserId: who.actorUserId, correlationId: who.requestId };
 
     for (const { item, application, plan } of rows) {
       if (item.kind !== "application_plan" || !application || !plan) continue;
-      // Calendar-correct month arithmetic in Postgres (end-of-month safe), never in JS; now() is the transaction time (= startsAt).
-      const endRows = (await tx.execute(sql`select now() + make_interval(months => ${item.durationMonths!}::int) as ends`)) as unknown as Array<{ ends: Date | string }>;
+      // Calendar-correct arithmetic in Postgres (end-of-month safe), never in JS; now() is the transaction time (= startsAt).
+      // A period in days (self-service packages: "30 days, not a calendar month") or in calendar months — never both.
+      const endRows = (item.durationDays !== null
+        ? await tx.execute(sql`select now() + make_interval(days => ${item.durationDays}::int) as ends`)
+        : await tx.execute(sql`select now() + make_interval(months => ${item.durationMonths!}::int) as ends`)) as unknown as Array<{ ends: Date | string }>;
       const endsAt = new Date(endRows[0]!.ends);
       endsAll.push(endsAt);
       const [grant] = await tx
@@ -229,6 +261,7 @@ export async function activateContract(contractId: string, actor: CommercialActo
               quantity: item.quantity,
               billingPeriod: item.billingPeriod,
               durationMonths: item.durationMonths,
+              ...(item.durationDays !== null ? { durationDays: item.durationDays } : {}),
               unitPriceMinor: item.unitPriceMinor.toString(),
               lineTotalMinor: item.lineTotalMinor.toString(),
               entitlementSpec: item.entitlementSpec ?? null,
@@ -242,13 +275,13 @@ export async function activateContract(contractId: string, actor: CommercialActo
       await recordCommercialEvent(tx, { ...base, aggregateType: "entitlement_grant", aggregateId: grant!.id, eventType: "entitlement.planned", payload: { contractId: contract.id, contractItemId: item.id, applicationKey: application.key, planKey: plan.key } });
 
       const subscription = await createSubscription(
-        { organizationId: contract.organizationId, applicationKey: application.key, planKey: plan.key, actorUserId: actor.userId, currentPeriodStart: startsAt, currentPeriodEnd: endsAt },
+        { organizationId: contract.organizationId, applicationKey: application.key, planKey: plan.key, actorUserId: who.actorUserId, currentPeriodStart: startsAt, currentPeriodEnd: endsAt },
         tx,
       );
-      const access = await grantApplicationAccess({ organizationId: contract.organizationId, applicationKey: application.key, actorUserId: actor.userId }, tx);
+      const access = await grantApplicationAccess({ organizationId: contract.organizationId, applicationKey: application.key, actorUserId: who.actorUserId }, tx);
       await tx
         .update(entitlementGrants)
-        .set({ status: "active", activatedAt: startsAt, activatedBy: actor.userId, subscriptionId: subscription.id, applicationAccessId: access.id, updatedAt: sql`now()` })
+        .set({ status: "active", activatedAt: startsAt, activatedBy: who.actorUserId, activatedByApiKeyId: who.apiKeyId, subscriptionId: subscription.id, applicationAccessId: access.id, updatedAt: sql`now()` })
         .where(eq(entitlementGrants.id, grant!.id));
       // D2-B — an application with a managed integration (Na Pista) gets its provisioning request in the same transaction.
       await requestInitialProvisioningInTx(tx, {
@@ -257,7 +290,7 @@ export async function activateContract(contractId: string, actor: CommercialActo
         applicationKey: application.key,
         contractId: contract.id,
         entitlementGrantId: grant!.id,
-        actorUserId: actor.userId,
+        actorUserId: who.actorUserId,
       });
       await recordCommercialEvent(tx, {
         ...base,
@@ -276,10 +309,10 @@ export async function activateContract(contractId: string, actor: CommercialActo
       aggregateId: contract.id,
       eventType: "contract.activated",
       idempotencyKey: `contract.activated:${contract.id}`,
-      payload: { number: contract.number, grants: endsAll.length, startsAt: startsAt.toISOString(), endsAt: endsAt?.toISOString() ?? null },
+      payload: { number: contract.number, grants: endsAll.length, startsAt: startsAt.toISOString(), endsAt: endsAt?.toISOString() ?? null, paymentId: payment.id, ...(who.apiKeyId ? { apiKeyId: who.apiKeyId } : {}) },
     });
     await recordAuditEvent(
-      { actorUserId: actor.userId, organizationId: contract.organizationId, action: "platform.commercial.contract.activated", targetType: "contract", targetId: contract.id, metadata: { number: contract.number, grants: endsAll.length } },
+      { actorUserId: who.actorUserId ?? undefined, organizationId: contract.organizationId, action: "platform.commercial.contract.activated", targetType: "contract", targetId: contract.id, metadata: { number: contract.number, grants: endsAll.length, paymentId: payment.id, actor: who.actorType, ...(who.apiKeyId ? { apiKeyId: who.apiKeyId } : {}) } },
       tx,
     );
     return true;
@@ -381,4 +414,76 @@ export async function isContractManagedSubscription(organizationId: string, subs
     .where(and(eq(entitlementGrants.organizationId, organizationId), eq(entitlementGrants.subscriptionId, subscriptionId), eq(entitlementGrants.status, "active")))
     .limit(1);
   return !!row;
+}
+
+/**
+ * Persists what read-time effectiveness already enforces (entitlements/effectiveness.ts): every ACTIVE
+ * contract whose period ended becomes `expired`, its due grants `expired` (active → expired), their
+ * subscriptions canceled and their application access revoked unless another active grant still backs it.
+ * One transaction per contract (row-locked, re-checked), so it is safe to run from several workers and to
+ * re-run (idempotent). Actor: the platform itself (system). Run by the worker (src/worker.ts).
+ */
+export async function expireDueContracts(limit = 100): Promise<{ expired: string[] }> {
+  const due = await db
+    .select({ id: contracts.id })
+    .from(contracts)
+    .where(and(eq(contracts.status, "active"), isNotNull(contracts.endsAt), lte(contracts.endsAt, sql`now()`)))
+    .limit(limit);
+  const expired: string[] = [];
+  for (const { id } of due) {
+    const done = await db.transaction(async (tx: Tx) => {
+      const [contract] = await tx.select().from(contracts).where(eq(contracts.id, id)).for("update", { skipLocked: true });
+      if (!contract || contract.status !== "active" || !contract.endsAt || contract.endsAt.getTime() > Date.now()) return false;
+      const grants = await tx
+        .select()
+        .from(entitlementGrants)
+        .where(and(eq(entitlementGrants.contractId, contract.id), eq(entitlementGrants.status, "active"), lte(entitlementGrants.endsAt, sql`now()`)))
+        .for("update");
+      for (const grant of grants) {
+        if (grant.subscriptionId) {
+          const [sub] = await tx.select({ status: subscriptions.status }).from(subscriptions).where(eq(subscriptions.id, grant.subscriptionId));
+          if (sub && sub.status !== "canceled") await cancelSubscription({ organizationId: grant.organizationId, subscriptionId: grant.subscriptionId, actorUserId: null }, tx);
+        }
+        if (grant.applicationAccessId) {
+          const [access] = await tx.select({ status: organizationApplicationAccess.status }).from(organizationApplicationAccess).where(eq(organizationApplicationAccess.id, grant.applicationAccessId));
+          const [otherBacking] = await tx
+            .select({ id: entitlementGrants.id })
+            .from(entitlementGrants)
+            .where(and(eq(entitlementGrants.applicationAccessId, grant.applicationAccessId), eq(entitlementGrants.status, "active"), ne(entitlementGrants.id, grant.id)))
+            .limit(1);
+          if (access?.status === "active" && !otherBacking) {
+            const [application] = await tx.select({ key: applications.key }).from(applications).where(eq(applications.id, grant.applicationId));
+            await revokeApplicationAccess({ organizationId: grant.organizationId, applicationKey: application!.key, actorUserId: null }, tx);
+          }
+        }
+        await tx.update(entitlementGrants).set({ status: "expired", updatedAt: sql`now()` }).where(eq(entitlementGrants.id, grant.id));
+        await recordCommercialEvent(tx, {
+          aggregateType: "entitlement_grant",
+          aggregateId: grant.id,
+          eventType: "entitlement.expired",
+          organizationId: grant.organizationId,
+          actorType: "system",
+          idempotencyKey: `entitlement.expired:${grant.id}`,
+          payload: { contractId: grant.contractId, endsAt: grant.endsAt?.toISOString() ?? null, subscriptionId: grant.subscriptionId, applicationAccessId: grant.applicationAccessId },
+        });
+      }
+      await tx.update(contracts).set({ status: "expired", updatedAt: sql`now()` }).where(eq(contracts.id, contract.id));
+      await recordCommercialEvent(tx, {
+        aggregateType: "contract",
+        aggregateId: contract.id,
+        eventType: "contract.expired",
+        organizationId: contract.organizationId,
+        actorType: "system",
+        idempotencyKey: `contract.expired:${contract.id}`,
+        payload: { number: contract.number, endsAt: contract.endsAt.toISOString(), expiredGrants: grants.map((g) => g.id) },
+      });
+      await recordAuditEvent(
+        { organizationId: contract.organizationId, action: "platform.commercial.contract.expired", targetType: "contract", targetId: contract.id, metadata: { number: contract.number, expiredGrants: grants.length } },
+        tx,
+      );
+      return true;
+    });
+    if (done) expired.push(id);
+  }
+  return { expired };
 }

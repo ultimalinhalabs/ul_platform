@@ -1,6 +1,6 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { contractItems, contracts, contractVersions } from "../../db/schema/index.js";
+import { commercialPayments, contractItems, contracts, contractVersions } from "../../db/schema/index.js";
 import { NotFoundError } from "../../shared/errors.js";
 import { contractItemDto, contractSummaryDto } from "./serializers.js";
 
@@ -34,9 +34,16 @@ export async function getOrganizationContract(organizationId: string, contractId
   const items = version
     ? await db.select().from(contractItems).where(eq(contractItems.contractVersionId, version.id)).orderBy(asc(contractItems.sort), asc(contractItems.createdAt))
     : [];
+  // Migration 0023 — the payment condition as the client may see it: status only, never the internal evidence or who confirmed.
+  const [payment] = await db
+    .select()
+    .from(commercialPayments)
+    .where(and(eq(commercialPayments.contractId, contract.id), eq(commercialPayments.status, "confirmed")))
+    .limit(1);
   return {
     ...contractSummaryDto(contract, version ?? null),
     snapshot: version?.snapshot ?? null,
     items: items.map(contractItemDto),
+    payment: payment ? { status: payment.status, amountMinor: payment.amountMinor.toString(), currency: payment.currency, confirmedAt: payment.confirmedAt.toISOString() } : null,
   };
 }

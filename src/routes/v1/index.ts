@@ -25,6 +25,8 @@ import { publicProposalsRouter } from "./publicProposals.js";
 import { credentialProvisioningRouter } from "./credentialProvisioning.js";
 import { platformCommercialReadRouter } from "./platformCommercialRead.js";
 import { leadsRouter } from "./leads.js";
+import { commercialPaymentsRouter } from "./commercialPayments.js";
+import { selfServiceRouter } from "./selfService.js";
 
 export const v1Router = Router();
 
@@ -54,3 +56,5 @@ v1Router.use(publicProposalsRouter);
 v1Router.use(clientCommercialRouter);
 v1Router.use(credentialProvisioningRouter);
 v1Router.use(leadsRouter);
+v1Router.use(commercialPaymentsRouter);
+v1Router.use(selfServiceRouter);
