@@ -59,6 +59,38 @@ const envSchema = z.object({
   INVITATION_VALIDITY_DAYS: z.coerce.number().int().min(1).max(90).default(7),
   /** Worker — how often active contracts past their end are persisted as expired (default 5 min). */
   CONTRACT_EXPIRY_SWEEP_INTERVAL_MS: z.coerce.number().int().min(10_000).default(300_000),
+  /**
+   * Migration 0026 — renewal: how many days before the current period ends the next one is prepared
+   * (awaiting payment) under a standing authorization. A technical default (7 days), shown to the client.
+   */
+  RENEWAL_LEAD_DAYS: z.coerce.number().int().min(1).max(60).default(7),
+  /**
+   * Migration 0027 — payment instructions shown to the client (owner decision 2026-10-16: IBAN transfer or
+   * Multicaixa Express, then upload the PDF proof). Public business data, not secrets; a method whose values
+   * are not set is simply not offered.
+   */
+  PAYMENT_BANK_NAME: z.string().trim().min(1).optional(),
+  PAYMENT_ACCOUNT_HOLDER: z.string().trim().min(1).optional(),
+  PAYMENT_IBAN: z.string().trim().min(1).optional(),
+  PAYMENT_MCX_EXPRESS_NUMBER: z.string().trim().min(1).optional(),
+  /**
+   * Migration 0028 — transactional email over SMTP (AngoWeb mailbox in production). Without SMTP_HOST the
+   * worker leaves messages pending (nothing is lost). SMTP_PASSWORD is a secret.
+   */
+  SMTP_HOST: z.string().trim().min(1).optional(),
+  SMTP_PORT: z.coerce.number().int().positive().default(465),
+  SMTP_SECURE: z.enum(["true", "false"]).default("true").transform((v) => v === "true"),
+  SMTP_USER: z.string().trim().min(1).optional(),
+  SMTP_PASSWORD: z.string().min(1).optional(),
+  EMAIL_FROM: z.string().trim().min(3).default("Última Linha <nao-responder@ultimalinha.ao>"),
+  EMAIL_REPLY_TO: z.string().trim().min(3).optional(),
+  /** Where UL operations are told a proof arrived (e.g. financeiro@ultimalinha.ao); unset = no such email. */
+  PAYMENTS_NOTIFY_EMAIL: z.string().trim().email().optional(),
+  /** Public app URLs used in email links (no secrets in links). */
+  UL_CLIENT_URL: z.string().url().default("http://localhost:3002"),
+  UL_CONSOLE_URL: z.string().url().default("http://localhost:3010"),
+  EMAIL_SWEEP_INTERVAL_MS: z.coerce.number().int().min(1_000).default(15_000),
+  RENEWAL_SWEEP_INTERVAL_MS: z.coerce.number().int().min(10_000).default(3_600_000),
 });
 
 const parsed = envSchema.safeParse(process.env);

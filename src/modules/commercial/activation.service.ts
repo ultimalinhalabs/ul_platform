@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNotNull, lte, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import {
   applications,
@@ -20,6 +20,8 @@ import { requestInitialProvisioningInTx } from "../integrationProvisioning/servi
 import { cancelSubscription, createSubscription } from "../subscriptions/service.js";
 import { canonicalize } from "./canonicalJson.js";
 import { type CommercialActor, recordCommercialEvent } from "./events.js";
+import { listProofs } from "./paymentProofs.service.js";
+import { cancelAwaitingRenewalsInTx, lapseRenewalsInTx, renewalState } from "./renewals.service.js";
 import { contractItemDto, contractSummaryDto, grantDto } from "./serializers.js";
 
 /**
@@ -115,7 +117,7 @@ async function analyze(executor: Executor, contract: ContractRow) {
   const [payment] = await executor
     .select()
     .from(commercialPayments)
-    .where(and(eq(commercialPayments.contractId, contract.id), eq(commercialPayments.status, "confirmed")))
+    .where(and(eq(commercialPayments.contractId, contract.id), eq(commercialPayments.status, "confirmed"), isNull(commercialPayments.renewalId)))
     .limit(1);
   if (!payment) blockers.push({ code: "PAYMENT_NOT_CONFIRMED", message: "The contract's payment has not been confirmed" });
 
@@ -198,7 +200,7 @@ export async function getPlatformContract(contractId: string, executor: Executor
   const [payment] = await executor
     .select()
     .from(commercialPayments)
-    .where(and(eq(commercialPayments.contractId, contract.id), eq(commercialPayments.status, "confirmed")))
+    .where(and(eq(commercialPayments.contractId, contract.id), eq(commercialPayments.status, "confirmed"), isNull(commercialPayments.renewalId)))
     .limit(1);
   return {
     ...contractSummaryDto(contract, version ?? null),
@@ -220,6 +222,29 @@ export async function getPlatformContract(contractId: string, executor: Executor
           confirmedByApiKeyId: payment.confirmedByApiKeyId,
         }
       : null,
+    // Migrations 0026/0027 — renewal (authorization, periods), every payment of the renewals, and the client's proofs.
+    renewal: await renewalState(executor, contract),
+    renewalPayments: (
+      await executor
+        .select()
+        .from(commercialPayments)
+        .where(and(eq(commercialPayments.contractId, contract.id), eq(commercialPayments.status, "confirmed"), isNotNull(commercialPayments.renewalId)))
+        .orderBy(asc(commercialPayments.confirmedAt))
+    ).map((p) => ({
+      id: p.id,
+      renewalId: p.renewalId,
+      source: p.source,
+      method: p.method,
+      amountMinor: p.amountMinor.toString(),
+      currency: p.currency,
+      externalReference: p.externalReference,
+      evidenceReference: p.evidenceReference,
+      receivedAt: p.receivedAt.toISOString(),
+      confirmedAt: p.confirmedAt.toISOString(),
+      confirmedByUserId: p.confirmedByUserId,
+      confirmedByApiKeyId: p.confirmedByApiKeyId,
+    })),
+    proofs: await listProofs(executor, contract.id),
   };
 }
 
@@ -410,6 +435,7 @@ export async function cancelContract(contractId: string, actor: CommercialActor)
     for (const grant of await tx.select().from(entitlementGrants).where(and(eq(entitlementGrants.contractId, contract.id), inArray(entitlementGrants.status, ["planned", "active"]))).for("update")) {
       await revokeGrantInTx(tx, grant, "contract cancelled", actor);
     }
+    await cancelAwaitingRenewalsInTx(tx, contract.id, contract.organizationId, "contract cancelled", actor.userId);
     await tx.update(contracts).set({ status: "cancelled", updatedAt: sql`now()` }).where(eq(contracts.id, contract.id));
     await recordCommercialEvent(tx, { aggregateType: "contract", aggregateId: contract.id, eventType: "contract.cancelled", organizationId: contract.organizationId, actorType: "platform_admin", actorUserId: actor.userId, correlationId: actor.requestId, idempotencyKey: `contract.cancelled:${contract.id}`, payload: { number: contract.number } });
     await recordAuditEvent({ actorUserId: actor.userId, organizationId: contract.organizationId, action: "platform.commercial.contract.cancelled", targetType: "contract", targetId: contract.id, metadata: { number: contract.number } }, tx);
@@ -425,6 +451,7 @@ export async function terminateContract(contractId: string, actor: CommercialAct
     if (contract.status !== "active") throw new AppError(409, "CONTRACT_NOT_TERMINABLE", `A ${contract.status} contract cannot be terminated`);
     const grants = await tx.select().from(entitlementGrants).where(and(eq(entitlementGrants.contractId, contract.id), inArray(entitlementGrants.status, ["planned", "active"]))).for("update");
     for (const grant of grants) await revokeGrantInTx(tx, grant, "contract terminated", actor);
+    await cancelAwaitingRenewalsInTx(tx, contract.id, contract.organizationId, "contract terminated", actor.userId);
     await tx.update(contracts).set({ status: "terminated", updatedAt: sql`now()` }).where(eq(contracts.id, contract.id));
     await recordCommercialEvent(tx, { aggregateType: "contract", aggregateId: contract.id, eventType: "contract.terminated", organizationId: contract.organizationId, actorType: "platform_admin", actorUserId: actor.userId, correlationId: actor.requestId, idempotencyKey: `contract.terminated:${contract.id}`, payload: { number: contract.number, revokedGrants: grants.map((g) => g.id) } });
     await recordAuditEvent({ actorUserId: actor.userId, organizationId: contract.organizationId, action: "platform.commercial.contract.terminated", targetType: "contract", targetId: contract.id, metadata: { number: contract.number, revokedGrants: grants.length } }, tx);
@@ -493,6 +520,8 @@ export async function expireDueContracts(limit = 100): Promise<{ expired: string
           payload: { contractId: grant.contractId, endsAt: grant.endsAt?.toISOString() ?? null, subscriptionId: grant.subscriptionId, applicationAccessId: grant.applicationAccessId },
         });
       }
+      // Migration 0026 — a renewal still awaiting payment when the period ended lapses (no valid, paid renewal).
+      await lapseRenewalsInTx(tx, contract.id, contract.organizationId);
       await tx.update(contracts).set({ status: "expired", updatedAt: sql`now()` }).where(eq(contracts.id, contract.id));
       await recordCommercialEvent(tx, {
         aggregateType: "contract",

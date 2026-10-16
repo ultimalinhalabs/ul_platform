@@ -7,6 +7,8 @@ import { AppError, ConflictError, EmailNotVerifiedError, NotFoundError, Organiza
 import { recordAuditEvent } from "../audit/service.js";
 import { assertOwnerRoleChangeAllowed } from "../authorization/service.js";
 import { getRoleByKey } from "../roles/service.js";
+import { enqueueEmail } from "../email/outbox.js";
+import { invitationEmail } from "../email/templates.js";
 import { isEmailVerified } from "../users/service.js";
 import { assertMemberCapacityInTx } from "./memberLimit.js";
 
@@ -15,7 +17,8 @@ import { assertMemberCapacityInTx } from "./memberLimit.js";
  * The inviter never learns whether the email has an account (no enumeration);
  * the invitee accepts signed in with that VERIFIED email; acceptance creates
  * an `active` membership with the invited role in one transaction. Pending
- * invitations take a place under `members.max`. UL Platform sends no email.
+ * invitations take a place under `members.max`. Migration 0028 — the invitation
+ * email is queued in the same transaction (owner decision 2026-10-16: automatic).
  */
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -104,6 +107,13 @@ export async function createInvitation(input: { organizationId: string; email: s
       { actorUserId: input.actorUserId, organizationId: input.organizationId, action: "membership.invitation.created", targetType: "organization_invitation", targetId: created!.id, metadata: { roleKey: input.roleKey } },
       tx,
     );
+    const [org] = await tx.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, input.organizationId));
+    await enqueueEmail(tx, {
+      kind: "membership.invitation",
+      to: email,
+      dedupeKey: `membership.invitation:${created!.id}`,
+      ...invitationEmail({ organizationName: org!.name, roleKey: role.key, expiresAt: created!.expiresAt, acceptUrl: `${env.UL_CLIENT_URL.replace(/\/+$/, "")}/app/invitations` }),
+    });
     return created!;
   });
   return invitationDto({ ...row, roleKey: role.key });

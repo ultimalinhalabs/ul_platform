@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { bigint, check, index, pgTable, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { apiKeys } from "./apiKeys.js";
+import { contractRenewals } from "./contractRenewals.js";
 import { contracts } from "./contracts.js";
 import { organizations } from "./organizations.js";
 import { users } from "./users.js";
@@ -51,12 +52,16 @@ export const commercialPayments = pgTable(
     /** Internal pointer to the evidence (document id, ticket) — never the document itself nor personal data. */
     evidenceReference: text("evidence_reference"),
     idempotencyKey: text("idempotency_key").notNull(),
+    /** Migration 0026 — set when the payment is for a renewal period (then it must match the renewal, not the contract total). */
+    renewalId: uuid("renewal_id").references(() => contractRenewals.id, { onDelete: "restrict" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     unique("commercial_payments_idempotency_unique").on(table.idempotencyKey),
     unique("commercial_payments_reference_unique").on(table.source, table.externalReference),
-    uniqueIndex("commercial_payments_one_confirmed_per_contract").on(table.contractId).where(sql`${table.status} = 'confirmed'`),
+    // Migration 0026 — one confirmed payment for the contract's first period, and one per renewal period.
+    uniqueIndex("commercial_payments_one_confirmed_per_contract").on(table.contractId).where(sql`${table.status} = 'confirmed' and ${table.renewalId} is null`),
+    uniqueIndex("commercial_payments_one_confirmed_per_renewal").on(table.renewalId).where(sql`${table.status} = 'confirmed' and ${table.renewalId} is not null`),
     index("commercial_payments_organization_idx").on(table.organizationId),
     check("commercial_payments_status_check", sql`${table.status} in ('confirmed')`),
     check("commercial_payments_source_check", sql`${table.source} in ('manual', 'integration')`),

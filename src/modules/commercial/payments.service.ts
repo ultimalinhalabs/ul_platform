@@ -1,11 +1,13 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../../db/index.js";
-import { commercialPayments, contracts } from "../../db/schema/index.js";
+import { commercialPayments, contractRenewals, contracts } from "../../db/schema/index.js";
 import { AppError, ConflictError, NotFoundError } from "../../shared/errors.js";
 import { recordAuditEvent } from "../audit/service.js";
 import { type ActivationActor, activateContract } from "./activation.service.js";
 import { recordCommercialEvent } from "./events.js";
+import { acceptProofInTx } from "./paymentProofs.service.js";
+import { type RenewalActor, applyRenewal } from "./renewals.service.js";
 
 /**
  * Migration 0023 — payment confirmation, the third activation condition.
@@ -48,6 +50,10 @@ export const confirmPaymentSchema = z
     receivedAt: z.coerce.date(),
     /** Internal receipt id — mandatory evidence of a manual confirmation. */
     evidenceReference: z.string().trim().min(1).max(500),
+    /** Migration 0026 — pay a renewal period of this contract instead of its first period. */
+    renewalId: z.string().uuid().optional(),
+    /** Migration 0027 — the client's proof the administrator relied on (becomes `accepted`). */
+    proofId: z.string().uuid().optional(),
   })
   .strict();
 export type ConfirmPaymentInput = z.infer<typeof confirmPaymentSchema>;
@@ -59,6 +65,7 @@ export const confirmIntegrationPaymentSchema = z
     currency: z.string().regex(/^[A-Z]{3}$/),
     externalReference: z.string().trim().min(1).max(200),
     receivedAt: z.coerce.date(),
+    renewalId: z.string().uuid().optional(),
   })
   .strict();
 
@@ -81,12 +88,14 @@ export function paymentDto(row: PaymentRow) {
     confirmedAt: row.confirmedAt.toISOString(),
     confirmedByUserId: row.confirmedByUserId,
     confirmedByApiKeyId: row.confirmedByApiKeyId,
+    renewalId: row.renewalId,
   };
 }
 
-function sameConfirmation(row: PaymentRow, contractId: string, input: { amountMinor: string; currency: string; externalReference: string; method: string }, confirmer: Confirmer) {
+function sameConfirmation(row: PaymentRow, contractId: string, input: { amountMinor: string; currency: string; externalReference: string; method: string; renewalId?: string }, confirmer: Confirmer) {
   return (
     row.contractId === contractId &&
+    (row.renewalId ?? undefined) === (input.renewalId ?? undefined) &&
     row.source === confirmer.source &&
     row.amountMinor.toString() === input.amountMinor &&
     row.currency === input.currency &&
@@ -100,7 +109,7 @@ const MAX_CLOCK_SKEW_MS = 5 * 60_000;
 
 async function recordConfirmation(
   contractId: string,
-  input: { amountMinor: string; currency: string; method: string; externalReference: string; receivedAt: Date; evidenceReference?: string },
+  input: { amountMinor: string; currency: string; method: string; externalReference: string; receivedAt: Date; evidenceReference?: string; renewalId?: string; proofId?: string },
   idempotencyKey: string,
   confirmer: Confirmer,
 ): Promise<{ payment: PaymentRow; replayed: boolean }> {
@@ -116,15 +125,21 @@ async function recordConfirmation(
     const [contract] = await tx.select().from(contracts).where(eq(contracts.id, contractId)).for("update");
     if (!contract) throw new NotFoundError("Contract not found");
 
+    // Migration 0026 — a renewal period is paid on its own (one confirmed payment per renewal).
+    const [renewal] = input.renewalId
+      ? await tx.select().from(contractRenewals).where(and(eq(contractRenewals.id, input.renewalId), eq(contractRenewals.contractId, contractId))).for("update")
+      : [];
+    if (input.renewalId && !renewal) throw new NotFoundError("Renewal not found");
+
     const [existing] = await tx
       .select()
       .from(commercialPayments)
-      .where(and(eq(commercialPayments.contractId, contractId), eq(commercialPayments.status, "confirmed")))
+      .where(and(eq(commercialPayments.contractId, contractId), eq(commercialPayments.status, "confirmed"), renewal ? eq(commercialPayments.renewalId, renewal.id) : isNull(commercialPayments.renewalId)))
       .limit(1);
     if (existing) {
       // The same confirmation arriving again under another key (e.g. a re-delivered integration notice) is not a second payment.
       if (sameConfirmation(existing, contractId, input, confirmer)) return { payment: existing, replayed: true };
-      throw new AppError(409, "PAYMENT_ALREADY_CONFIRMED", "This contract already has a confirmed payment");
+      throw new AppError(409, "PAYMENT_ALREADY_CONFIRMED", renewal ? "This renewal already has a confirmed payment" : "This contract already has a confirmed payment");
     }
     const [referenceUsed] = await tx
       .select({ id: commercialPayments.id })
@@ -132,9 +147,17 @@ async function recordConfirmation(
       .where(and(eq(commercialPayments.source, confirmer.source), eq(commercialPayments.externalReference, input.externalReference)))
       .limit(1);
     if (referenceUsed) throw new AppError(409, "PAYMENT_REFERENCE_IN_USE", "This payment reference was already used to confirm another contract");
-    if (contract.status !== "pending_activation") throw new AppError(409, "CONTRACT_NOT_PAYABLE", `A ${contract.status} contract cannot receive a payment confirmation`);
-    if (contract.currency !== input.currency || contract.totalMinor.toString() !== input.amountMinor) {
-      throw new AppError(409, "PAYMENT_AMOUNT_MISMATCH", "The amount or currency does not match the contract");
+    if (renewal) {
+      if (renewal.status !== "awaiting_payment") throw new AppError(409, "RENEWAL_NOT_PAYABLE", `A ${renewal.status} renewal cannot receive a payment confirmation`);
+      if (contract.status !== "active") throw new AppError(409, "CONTRACT_NOT_PAYABLE", `A ${contract.status} contract cannot receive a renewal payment`);
+      if (renewal.currency !== input.currency || renewal.amountMinor.toString() !== input.amountMinor) {
+        throw new AppError(409, "PAYMENT_AMOUNT_MISMATCH", "The amount or currency does not match the renewal");
+      }
+    } else {
+      if (contract.status !== "pending_activation") throw new AppError(409, "CONTRACT_NOT_PAYABLE", `A ${contract.status} contract cannot receive a payment confirmation`);
+      if (contract.currency !== input.currency || contract.totalMinor.toString() !== input.amountMinor) {
+        throw new AppError(409, "PAYMENT_AMOUNT_MISMATCH", "The amount or currency does not match the contract");
+      }
     }
 
     const [payment] = await tx
@@ -152,8 +175,10 @@ async function recordConfirmation(
         confirmedByApiKeyId: confirmer.source === "integration" ? confirmer.apiKeyId : null,
         evidenceReference: input.evidenceReference ?? null,
         idempotencyKey,
+        renewalId: renewal?.id ?? null,
       })
       .returning();
+    if (input.proofId && confirmer.source === "manual") await acceptProofInTx(tx, input.proofId, { contractId, renewalId: renewal?.id ?? null }, confirmer.userId);
 
     await recordCommercialEvent(tx, {
       aggregateType: "payment",
@@ -166,6 +191,8 @@ async function recordConfirmation(
       idempotencyKey: `payment.confirmed:${payment!.id}`,
       payload: {
         contractId,
+        renewalId: renewal?.id ?? null,
+        proofId: input.proofId ?? null,
         source: confirmer.source,
         method: input.method,
         amountMinor: input.amountMinor,
@@ -181,7 +208,7 @@ async function recordConfirmation(
         action: "platform.commercial.payment.confirmed",
         targetType: "contract",
         targetId: contractId,
-        metadata: { paymentId: payment!.id, source: confirmer.source, method: input.method, amountMinor: input.amountMinor, currency: input.currency, hasEvidence: !!input.evidenceReference, ...(confirmer.source === "integration" ? { apiKeyId: confirmer.apiKeyId } : {}) },
+        metadata: { paymentId: payment!.id, renewalId: renewal?.id ?? null, proofId: input.proofId ?? null, source: confirmer.source, method: input.method, amountMinor: input.amountMinor, currency: input.currency, hasEvidence: !!input.evidenceReference, ...(confirmer.source === "integration" ? { apiKeyId: confirmer.apiKeyId } : {}) },
       },
       tx,
     );
@@ -200,9 +227,22 @@ async function activateAfterPayment(contractId: string, actor: ActivationActor) 
   }
 }
 
+/** After a renewal payment is committed: apply it (once). A blocker is reported, never thrown. */
+async function applyAfterPayment(renewalId: string, actor: RenewalActor) {
+  try {
+    const { applied } = await applyRenewal(renewalId, actor);
+    return { activated: true, alreadyActive: !applied, blocker: null };
+  } catch (error) {
+    if (error instanceof AppError) return { activated: false, alreadyActive: false, blocker: { code: error.code, message: error.message } };
+    throw error;
+  }
+}
+
 export async function confirmManualPayment(contractId: string, input: ConfirmPaymentInput, idempotencyKey: string, admin: { userId: string; requestId?: string }) {
   const { payment, replayed } = await recordConfirmation(contractId, input, idempotencyKey, { source: "manual", userId: admin.userId, requestId: admin.requestId });
-  const activation = await activateAfterPayment(contractId, { userId: admin.userId, requestId: admin.requestId });
+  const activation = payment.renewalId
+    ? await applyAfterPayment(payment.renewalId, { userId: admin.userId, requestId: admin.requestId })
+    : await activateAfterPayment(contractId, { userId: admin.userId, requestId: admin.requestId });
   return { payment: { ...paymentDto(payment), evidenceReference: payment.evidenceReference }, replayed, activation };
 }
 
@@ -210,7 +250,8 @@ export async function confirmIntegrationPayment(input: z.infer<typeof confirmInt
   const { contractId, ...rest } = input;
   // The method is the confirming application itself (e.g. MICHA_EXPRESS → micha_express), never a request field.
   const { payment, replayed } = await recordConfirmation(contractId, { ...rest, method: service.applicationKey.toLowerCase() }, idempotencyKey, { source: "integration", apiKeyId: service.apiKeyId, requestId: service.requestId });
-  const activation = await activateAfterPayment(contractId, { system: true, apiKeyId: service.apiKeyId, requestId: service.requestId });
+  const actor = { system: true as const, apiKeyId: service.apiKeyId, requestId: service.requestId };
+  const activation = payment.renewalId ? await applyAfterPayment(payment.renewalId, actor) : await activateAfterPayment(contractId, actor);
   return { payment: paymentDto(payment), replayed, activation };
 }
 

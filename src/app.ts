@@ -31,7 +31,7 @@ app.use(
     methods: ["GET", "POST", "PATCH", "DELETE"],
     // Idempotency-Key: browser clients retry organization creation safely (POST /v1/organizations).
     allowedHeaders: ["Authorization", "Content-Type", "X-Request-ID", "Idempotency-Key"],
-    exposedHeaders: ["X-Request-ID"],
+    exposedHeaders: ["X-Request-ID", "Content-Disposition"],
   }),
 );
 // First-in-first-out ordering matters: requestId before requestTiming (which logs it),

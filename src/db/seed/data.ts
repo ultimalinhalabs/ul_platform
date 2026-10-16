@@ -188,6 +188,12 @@ export const PLATFORM_ROLES = [
     name: "Platform Admin",
     description: "Full administrative control of the platform's own global infrastructure (control plane).",
   },
+  // Migration 0027 — prepared for a future finance tier (owner decision 2026-10-16); nobody holds it yet.
+  {
+    key: "PLATFORM_FINANCE",
+    name: "Platform Finance",
+    description: "Reads contracts, opens payment proofs and confirms payments (no other platform authority).",
+  },
 ] as const;
 
 /**
@@ -228,10 +234,13 @@ export const PLATFORM_PERMISSIONS = [
   { key: "platform.entitlement.grant", description: "Activate/revoke entitlement grants (creates subscriptions/application access)." },
   // Migration 0023 — manual payment confirmation (evidence + audit); activation never skips the payment condition.
   { key: "platform.payment.confirm", description: "Record a manual payment confirmation for a contract (with evidence; audited)." },
+  // Migration 0027 — the PDF proofs clients upload.
+  { key: "platform.payment_proof.read", description: "Open the payment proofs (PDF) clients uploaded for their contracts." },
 ] as const;
 
 export const PLATFORM_ROLE_PERMISSIONS: Record<(typeof PLATFORM_ROLES)[number]["key"], string[]> = {
   PLATFORM_ADMIN: PLATFORM_PERMISSIONS.map((p) => p.key),
+  PLATFORM_FINANCE: ["platform.commercial.read", "platform.payment.confirm", "platform.payment_proof.read"],
 };
 
 export const ROLES = [

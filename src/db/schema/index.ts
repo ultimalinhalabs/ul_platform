@@ -31,5 +31,8 @@ export * from "./entitlementGrants.js";
 export * from "./credentialProvisioning.js";
 export * from "./leads.js";
 export * from "./organizationCreationRequests.js";
+export * from "./contractRenewals.js";
 export * from "./commercialPayments.js";
 export * from "./organizationInvitations.js";
+export * from "./paymentProofs.js";
+export * from "./emailOutbox.js";

@@ -1,7 +1,9 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { commercialPayments, contractItems, contracts, contractVersions } from "../../db/schema/index.js";
 import { NotFoundError } from "../../shared/errors.js";
+import { listProofs } from "./paymentProofs.service.js";
+import { renewalState } from "./renewals.service.js";
 import { contractItemDto, contractSummaryDto } from "./serializers.js";
 
 /**
@@ -38,12 +40,15 @@ export async function getOrganizationContract(organizationId: string, contractId
   const [payment] = await db
     .select()
     .from(commercialPayments)
-    .where(and(eq(commercialPayments.contractId, contract.id), eq(commercialPayments.status, "confirmed")))
+    .where(and(eq(commercialPayments.contractId, contract.id), eq(commercialPayments.status, "confirmed"), isNull(commercialPayments.renewalId)))
     .limit(1);
   return {
     ...contractSummaryDto(contract, version ?? null),
     snapshot: version?.snapshot ?? null,
     items: items.map(contractItemDto),
     payment: payment ? { status: payment.status, amountMinor: payment.amountMinor.toString(), currency: payment.currency, confirmedAt: payment.confirmedAt.toISOString() } : null,
+    // Migrations 0026/0027 — renewal (offer to authorize, standing authorization, periods) and the proofs this organization sent.
+    renewal: await renewalState(db, contract),
+    proofs: (await listProofs(db, contract.id)).map(({ uploadedByUserId: _u, reviewedByUserId: _r, sha256: _s, ...client }) => client),
   };
 }
