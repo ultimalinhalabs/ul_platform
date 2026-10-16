@@ -42,6 +42,14 @@ const envSchema = z.object({
    */
   // No default here (unlike Fase 15) — see the APP_ENV check below for why.
   PLATFORM_ALLOWED_ORIGINS: z.string().min(1).optional(),
+  /**
+   * Maximum organizations one user may create in a rolling 24 hours
+   * (`POST /v1/organizations`; counted from `organizations.created_by`, so it
+   * holds across instances, and applies to every creation path — the route
+   * and proposal acceptance with `organization.create`). Default 10 (owner's
+   * initial proposal, 2026-10-15); `0` disables the window.
+   */
+  ORGANIZATION_CREATION_DAILY_LIMIT: z.coerce.number().int().min(0).default(10),
 });
 
 const parsed = envSchema.safeParse(process.env);

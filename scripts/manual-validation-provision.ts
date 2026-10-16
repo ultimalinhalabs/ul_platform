@@ -1,4 +1,8 @@
 import "dotenv/config";
+import { assertLocalOnlyTargets } from "./localOnlyGuard.js";
+
+// Dev-only: refuses to run unless every target is local (see localOnlyGuard.ts).
+assertLocalOnlyTargets({ supabase: true, database: true });
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 
