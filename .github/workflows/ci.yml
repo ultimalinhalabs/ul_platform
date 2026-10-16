@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches: [master]
+  # Every pull request, including stacked PRs whose base is another branch (as in ul-client).
   pull_request:
-    branches: [master]
 
 # Fase 16 §38: install -> lint -> typecheck -> test -> build. No deployment
 # step — this workflow validates, it never ships. Tests are real
