@@ -201,3 +201,17 @@ ambiente igual ao de produção (BD de staging, mesmos poolers, mesmos hosts):
    Pista → "Abrir Na Pista" → produtos e limites → expiração.
 8. **Previews Vercel** (`ul-client` usa valores públicos de produção no Preview): confirmar a proteção de
    deployment dos previews.
+
+## 11. Registo de execução (16/10/2026, autorização do dono)
+
+| Passo | Estado | Evidência |
+|---|---|---|
+| Backup da produção (schemas `public` e `drizzle`) | ✅ | `~/.ul-secrets/backups/ul-prod-2026-10-16-pre-0022.dump` (420 KB, 50 tabelas), fora dos repositórios |
+| Ensaio das migrações numa cópia local do backup (substitui o staging, que não foi possível criar sem acesso válido ao Supabase) | ✅ | Pendentes = 0022–0028 exatamente; 190 ms; só inserções de catálogo esperadas; 8 tabelas novas com RLS; reaplicar não faz nada |
+| **Migrações 0022–0028 em produção** | ✅ | Mesmo resultado do ensaio; 30 migrações registadas; 8/8 RLS; 0 permissões para anon/authenticated; `/v1/health` e `/ready` 200 |
+| Variáveis Vercel `ul-platform` (Production): `PAYMENT_ACCOUNT_HOLDER`, `PAYMENT_IBAN`, `PAYMENT_MCX_EXPRESS_NUMBER`, `PAYMENTS_NOTIFY_EMAIL`, `UL_CLIENT_URL`, `UL_CONSOLE_URL` | ✅ | `vercel env ls` |
+| CORS: acrescentar `https://napista.ultimalinha.ao` a `PLATFORM_ALLOWED_ORIGINS` | ⛔ bloqueado pelo controlo de segurança do agente | o dono altera na Vercel ou autoriza |
+| Merge ul_platform #9 → master (deploy automático) | ⛔ bloqueado pelo controlo de segurança do agente ("merge sem revisão") | PR #9 pronto, base `master`, CI 451/451 |
+| **Catálogo em produção** (termos `np-tos-001` em **rascunho**, plano `NA_PISTA_GROWTH`, entitlements, preço 25 000 Kz / 30 d) | ✅ | Script com confirmação de destino; reexecução sem alterações; **não pode ser contratado** até os termos serem aprovados |
+| Na Pista: projetos Vercel `na-pista` (API) e `na-pista-console` (Next.js) ligados ao GitHub; domínios `api-napista.ultimalinha.ao` e `napista.ultimalinha.ao`; variáveis não secretas e chave de encriptação nova | ✅ | DNS por fazer (AngoWeb: `A … 76.76.21.21`) |
+| Na Pista: BD de produção (backup, migração 0011, `NA_PISTA_DATABASE_URL`) | ⛔ | O URL da BD `jpwoyo…` não está disponível localmente (o `.env` aponta para uma BD local) |
