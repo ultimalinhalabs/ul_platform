@@ -169,11 +169,14 @@ export const contractItems = pgTable(
     lineTotalMinor: bigint("line_total_minor", { mode: "bigint" }).notNull(),
     billingPeriod: text("billing_period", { enum: BILLING_PERIODS }).notNull(),
     durationMonths: integer("duration_months"),
+    /** Migration 0024 — see proposal_items.duration_days. */
+    durationDays: integer("duration_days"),
     entitlementSpec: jsonb("entitlement_spec"),
     ...timestamps,
   },
   (table) => [
     index("contract_items_version_idx").on(table.contractVersionId),
+    check("contract_items_duration_days_check", sql`${table.durationDays} is null or (${table.durationDays} > 0 and ${table.durationMonths} is null)`),
     check("contract_items_kind_check", sql`${table.kind} in ('application_plan', 'service', 'support', 'one_off', 'custom')`),
     check("contract_items_plan_check", sql`${table.kind} <> 'application_plan' or (${table.planId} is not null and ${table.applicationId} is not null)`),
     check("contract_items_quantity_check", sql`${table.quantity} > 0`),

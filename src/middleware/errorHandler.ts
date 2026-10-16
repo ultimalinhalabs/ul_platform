@@ -34,6 +34,14 @@ export function errorHandler(error: unknown, req: Request, res: Response, _next:
     return fail(res, error.statusCode, error.code, error.message);
   }
 
+  // Body parser failures (express.json / express.raw): a too-large or malformed body is the client's, never a 500.
+  const bodyError = error as { type?: unknown; status?: unknown };
+  if (typeof bodyError?.type === "string" && typeof bodyError.status === "number" && bodyError.status >= 400 && bodyError.status < 500) {
+    const code = bodyError.type === "entity.too.large" ? "PAYLOAD_TOO_LARGE" : "VALIDATION_ERROR";
+    logger.info("request failed", { requestId: req.requestId, event: "http.request.error", errorCode: code, status: bodyError.status, path: req.path });
+    return fail(res, bodyError.status, code, bodyError.type === "entity.too.large" ? "The request body is too large" : "The request body could not be read");
+  }
+
   if (error instanceof ZodError) {
     logger.info("request failed", {
       requestId: req.requestId,

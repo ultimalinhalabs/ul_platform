@@ -12,6 +12,10 @@ export const COMMERCIAL_AGGREGATE_TYPES = [
   "contract",
   "contract_version",
   "entitlement_grant",
+  "payment",
+  // Migrations 0026/0027
+  "contract_renewal",
+  "payment_proof",
 ] as const;
 
 export const COMMERCIAL_ACTOR_TYPES = ["user", "platform_admin", "public_link", "system"] as const;
@@ -48,7 +52,7 @@ export const commercialEvents = pgTable(
     uniqueIndex("commercial_events_idempotency_unique").on(table.idempotencyKey).where(sql`${table.idempotencyKey} is not null`),
     check(
       "commercial_events_aggregate_type_check",
-      sql`${table.aggregateType} in ('terms_template', 'proposal', 'proposal_version', 'proposal_access_link', 'proposal_acceptance', 'contract', 'contract_version', 'entitlement_grant')`,
+      sql`${table.aggregateType} in ('terms_template', 'proposal', 'proposal_version', 'proposal_access_link', 'proposal_acceptance', 'contract', 'contract_version', 'entitlement_grant', 'payment', 'contract_renewal', 'payment_proof')`,
     ),
     check("commercial_events_actor_type_check", sql`${table.actorType} in ('user', 'platform_admin', 'public_link', 'system')`),
     check("commercial_events_event_type_check", sql`${table.eventType} ~ '^[a-z_]+(\\.[a-z_]+)+$'`),

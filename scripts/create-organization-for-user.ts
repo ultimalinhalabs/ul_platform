@@ -1,4 +1,8 @@
 import "dotenv/config";
+import { assertLocalOnlyTargets } from "./localOnlyGuard.js";
+
+// Dev-only: refuses to run unless every target is local (see localOnlyGuard.ts).
+assertLocalOnlyTargets({ database: true });
 
 /**
  * Manually-run helper for dev/test accounts: gives an EXISTING platform user

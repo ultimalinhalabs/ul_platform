@@ -1,4 +1,8 @@
 import "dotenv/config";
+import { assertLocalOnlyTargets } from "./localOnlyGuard.js";
+
+// Dev-only: refuses to run unless every target is local (see localOnlyGuard.ts).
+assertLocalOnlyTargets({ database: true });
 
 /** Removes every F21 test organization/user — same pattern as f19/f20-teardown-fixtures.ts. */
 async function main() {

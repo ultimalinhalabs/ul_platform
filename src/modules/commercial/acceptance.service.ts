@@ -19,7 +19,7 @@ import {
 import { ConflictError, ForbiddenError, NotFoundError, OrganizationSuspendedError } from "../../shared/errors.js";
 import { recordAuditEvent } from "../audit/service.js";
 import { findActiveMembership } from "../memberships/service.js";
-import { createOrganization } from "../organizations/service.js";
+import { createOrganization, lockAndAssertCreationWindow } from "../organizations/service.js";
 import { findActivePlatformAdmin } from "../platformAdmins/service.js";
 import { isEmailVerified } from "../users/service.js";
 import { canonicalSha256 } from "./canonicalJson.js";
@@ -123,7 +123,7 @@ export async function getRecipientProposal(proposalId: string, userId: string) {
   const snapshot = version.snapshot as VersionSnapshot;
   const [acceptance] = await db.select().from(proposalAcceptances).where(eq(proposalAcceptances.proposalId, proposal.id)).limit(1);
   const [contract] = acceptance ? await db.select().from(contracts).where(eq(contracts.sourceAcceptanceId, acceptance.id)).limit(1) : [];
-  const consent = currentAcceptanceConsent();
+  const consent = currentAcceptanceConsent(snapshot.terms.key);
   const open = ACCEPTABLE_PROPOSAL_STATUSES.has(proposal.status) && !acceptance && !!version.validUntil && version.validUntil.getTime() > Date.now();
   return {
     proposal: { id: proposal.id, number: proposal.number, status: proposal.status, prospectCompanyName: snapshot.proposal.prospectCompanyName, prospectTaxId: snapshot.proposal.prospectTaxId, recipientName: snapshot.proposal.recipientName, organizationId: proposal.organizationId },
@@ -146,6 +146,7 @@ export async function getRecipientProposal(proposalId: string, userId: string) {
         lineTotalMinor: i.lineTotalMinor,
         billingPeriod: i.billingPeriod,
         durationMonths: i.durationMonths,
+        durationDays: i.durationDays ?? null,
       })),
     })),
     consent: consent.available ? { key: consent.consent.key, version: consent.consent.version, status: consent.consent.status, text: consent.consent.text } : null,
@@ -222,6 +223,8 @@ async function existingResult(executor: Pick<typeof db, "select">, acceptanceId:
 async function isSameAcceptance(executor: Pick<typeof db, "select">, existing: typeof proposalAcceptances.$inferSelect, proposalId: string, input: AcceptInput, userId: string) {
   if (existing.proposalId !== proposalId || existing.versionId !== input.versionId || existing.optionId !== input.optionId) return false;
   if (existing.contentSha256 !== input.contentSha256 || existing.acceptedByUserId !== userId) return false;
+  // Who signs is part of the act: a replay must carry the same signer, or it is a different acceptance (409).
+  if (existing.signerName !== input.signerName || (existing.signerTitle ?? null) !== (input.signerTitle ?? null)) return false;
   if (!input.organization) return true;
   if ("id" in input.organization) return input.organization.id === existing.organizationId;
   const [org] = await executor.select({ name: organizations.name, createdBy: organizations.createdBy }).from(organizations).where(eq(organizations.id, existing.organizationId));
@@ -242,8 +245,6 @@ async function assertOwnerOfActiveOrganization(userId: string, organizationId: s
  * (200); anything else that conflicts is a 409.
  */
 export async function acceptProposal(proposalId: string, input: AcceptInput, idempotencyKey: string, actor: AcceptanceActor) {
-  const consent = currentAcceptanceConsent();
-  if (!consent.available) throw new ConflictError("Proposal acceptance is not available: the official consent statement is not configured");
   if (await findActivePlatformAdmin(actor.userId)) throw new ForbiddenError("Platform administrators cannot accept proposals on behalf of a client");
   const email = await verifiedEmailOf(actor.userId);
 
@@ -280,6 +281,9 @@ export async function acceptProposal(proposalId: string, input: AcceptInput, ide
     if (!terms || terms.bodySha256 !== snapshot.terms.bodySha256 || terms.version !== snapshot.terms.version || terms.key !== snapshot.terms.key) {
       throw new ConflictError("The proposal terms do not match the sent version");
     }
+    // The consent statement belongs to the terms family (consent.ts); none approved for these terms ⇒ refused (fail closed).
+    const consent = currentAcceptanceConsent(terms.key);
+    if (!consent.available) throw new ConflictError("Proposal acceptance is not available: the official consent statement is not configured");
 
     // The organization that will hold the contract.
     let organizationId: string;
@@ -293,6 +297,8 @@ export async function acceptProposal(proposalId: string, input: AcceptInput, ide
       organizationId = input.organization.id;
       await assertOwnerOfActiveOrganization(actor.userId, organizationId);
     } else if (input.organization && "create" in input.organization) {
+      // Same per-user guard as POST /v1/organizations: one creation window for every path.
+      await lockAndAssertCreationWindow(tx, actor.userId);
       organizationId = (await createOrganization({ name: input.organization.create.name, createdBy: actor.userId }, tx)).id;
     } else {
       throw new ConflictError("Choose an organization you own, or create one, to accept this proposal");
@@ -398,6 +404,7 @@ export async function acceptProposal(proposalId: string, input: AcceptInput, ide
         item.lineTotalMinor.toString() === snap.lineTotalMinor &&
         item.billingPeriod === snap.billingPeriod &&
         (item.durationMonths ?? null) === (snap.durationMonths ?? null) &&
+        (item.durationDays ?? null) === (snap.durationDays ?? null) &&
         (applicationKey ?? null) === (snap.application?.key ?? null) &&
         (planKey ?? null) === (snap.plan?.key ?? null);
       if (!consistent) throw new ConflictError("The accepted option does not match its frozen content");
@@ -415,6 +422,7 @@ export async function acceptProposal(proposalId: string, input: AcceptInput, ide
         lineTotalMinor: BigInt(snap.lineTotalMinor),
         billingPeriod: snap.billingPeriod,
         durationMonths: snap.durationMonths ?? null,
+        durationDays: snap.durationDays ?? null,
         entitlementSpec: snap.entitlementSpec ?? null,
       });
     }
