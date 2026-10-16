@@ -603,3 +603,43 @@ test("failure — a payment reference already used for another contract cannot c
   const [n] = await db.select({ n: count() }).from(commercialPayments).where(eq(commercialPayments.externalReference, ref));
   assert.equal(n!.n, 1);
 });
+
+// ============================================================================ prepared finance tier (migration 0027)
+
+test("PLATFORM_FINANCE holds exactly: read contracts, open proofs, confirm payments — and nothing else", async () => {
+  const [role] = await db.select().from(platformRoles).where(eq(platformRoles.key, "PLATFORM_FINANCE"));
+  assert.ok(role, "seeded by migration 0027 / seed");
+  const perms = await db
+    .select({ key: platformPermissions.key })
+    .from(platformRolePermissions)
+    .innerJoin(platformPermissions, eq(platformPermissions.id, platformRolePermissions.platformPermissionId))
+    .where(eq(platformRolePermissions.platformRoleId, role!.id));
+  assert.deepEqual(perms.map((p) => p.key).sort(), ["platform.commercial.read", "platform.payment.confirm", "platform.payment_proof.read"]);
+  const [members] = await db.select({ n: count() }).from(platformMemberships).where(and(eq(platformMemberships.platformRoleId, role!.id), sql`${platformMemberships.userId} not in (select id from users where email like 'ren-%')`));
+  assert.equal(members!.n, 0, "nobody holds it outside tests");
+
+  const finance = await platformPerson("PLATFORM_FINANCE");
+  const c = await pendingContract();
+  const up = await upload(c, PDF());
+  // Allowed
+  assert.equal((await call("GET", `/platform/contracts/${c.contractId}`, finance.token)).status, 200);
+  assert.equal((await call("GET", "/platform/payment-proofs", finance.token)).status, 200);
+  assert.equal((await call("GET", `/platform/payment-proofs/${up.data.proof.id}/file`, finance.token)).status, 200);
+  const paidRes = await manual(c.contractId, paid({ proofId: up.data.proof.id }), finance.token);
+  assert.equal(paidRes.status, 201, paidRes.raw);
+  assert.equal(paidRes.data.payment.confirmedByUserId, finance.user.id);
+  // Refused: activation/revocation, contract lifecycle, proposals, admins, credentials, organizations
+  const other = await pendingContract();
+  for (const [method, path, body] of [
+    ["POST", `/platform/contracts/${other.contractId}/activation`, undefined],
+    ["POST", `/platform/contracts/${other.contractId}/cancellation`, undefined],
+    ["POST", "/platform/proposals", { prospectCompanyName: "X", recipientName: "Y", recipientEmail: "y@example.com", validUntil: future(), termsTemplateId: termsId }],
+    ["GET", "/platform/admins", undefined],
+    ["POST", "/platform/credentials", { applicationKey: "NA_PISTA", scopes: [] }],
+    ["PATCH", `/platform/organizations/${other.orgId}/status`, { status: "suspended" }],
+    ["POST", `/platform/renewals/${randomUUID()}/activation`, undefined],
+  ] as const) {
+    const r = await call(method, path, finance.token, body);
+    assert.equal(r.status, 403, `${method} ${path} → ${r.status} ${r.code}`);
+  }
+});

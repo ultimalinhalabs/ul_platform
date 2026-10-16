@@ -3,6 +3,13 @@
 > Preparado a 16/10/2026 (passo 5). **Nada foi publicado.** Cada passo marcado com 🔐 precisa de autorização
 > explícita do dono no momento, conforme o §15 do CLAUDE.md. Estado da produção verificado só em leitura
 > (`BEGIN READ ONLY`, apenas contagens).
+>
+> **Valores comerciais:** Na Pista Crescimento, 25 000 Kz / 30 dias, 500 produtos, 5 utilizadores, são
+> **propostos e não aprovados para produção**. O catálogo e os termos não são carregados nem aprovados em
+> produção sem autorização. Documentos relacionados em `docs/pilot/`:
+> - `PILOT-JOURNEY.md` — o ciclo completo do cliente;
+> - `LEGAL-REVIEW-CHECKLIST.md` — revisão jurídica;
+> - `PAYMENTS-AND-COMMUNICATIONS-SETUP.md` — pagamentos e comunicações.
 
 ## 1. O que vai ser publicado
 
@@ -70,7 +77,7 @@ caracteres são truncados pelo PostgreSQL (aviso apenas), como já acontece em m
    - `GET /v1/catalog/self-service` dá 200.
    - Nos logs do worker: `worker.started`; sem SMTP aparece `email.smtp.unconfigured`, que é esperado.
 5. 🔐 **Merge da ul-console** e depois **da ul-client** (a ul-client depende do CORS e das rotas novas da API).
-6. 🔐 **Carregar os dados aprovados**:
+6. 🔐 **Carregar os dados comerciais** (só quando os valores forem aprovados para produção):
    - `npx tsx scripts/load-na-pista-growth.ts` (simulação);
    - depois `--apply --confirm-target=<host>`;
    - os termos ficam em **rascunho** e o plano aparece no catálogo mas **ainda não pode ser contratado**.
@@ -131,3 +138,66 @@ caracteres são truncados pelo PostgreSQL (aviso apenas), como já acontece em m
     4 em simultâneo todos recusados).
   - Subir e descer o limite no plano é seguido em ≤10 s.
   - Depois da expiração a resposta é 403 `ENTITLEMENT_REQUIRED`; antes da correção `0b4602d` era 503.
+
+## 8. Pedidos de integração (PRs em rascunho) e ordem de merge
+
+Todas as branches estão **0 commits atrás** da branch principal remota e fazem merge sem conflitos
+(`git merge-tree`). Nenhuma contém `.env` com valores, segredos ou ficheiros fora do âmbito (verificado no
+diff). Os ficheiros não rastreados do dono (`model_comercial_tec/`, `users_test.txt`) não foram enviados.
+
+Ordem de merge (quando autorizado):
+1. **ul-platform**: PRs empilhados, a fazer merge por esta ordem:
+   - `fix/organization-creation-hardening` → master (0022);
+   - `feature/commercial-payments-self-service` (0023/0024, limites de membros, métodos de pagamento);
+   - `feature/team-invitations` (0025);
+   - `feature/pilot-readiness` (0026–0028, consentimento, script, documentos).
+   - **As migrações 0022–0028 são aplicadas em produção antes do merge do primeiro**, porque o Vercel e o
+     Railway fazem deploy automático de `master`.
+2. **ul-console**: `feature/manual-payment-confirmation` (precisa das rotas 0023–0027).
+3. **ul-client**: #1 (2B) → #2 (2C, onboarding) → `feature/pilot-commercial-ui` (catálogo, pagamento,
+   renovação, convites, "Abrir Na Pista"). Precisa do CORS e das rotas da API.
+4. **na-pista**: `feature/plan-limits-products` (limite de produtos, 403 depois da expiração, proposta de
+   alojamento). Só tem efeito quando houver alojamento.
+5. **na-pista-console**: `feature/team-invitations`.
+
+## 9. Matriz de testes — pagamentos, renovação, expiração e revogação
+
+| Cenário | Onde | Resultado |
+|---|---|---|
+| Valor ou moeda errados (T06) | UT commercial-payments; E2E A10 | 409, nada gravado |
+| Sem permissão (T07); PLATFORM_FINANCE só com as 3 permissões | UT | 403, nada gravado |
+| Mesma chave → replay; a mesma chave com outro corpo dá 409; referência reutilizada dá 409 (T09/T17) | UT; E2E A10 | sem duplicação |
+| Confirmações concorrentes (4 manuais e 3 ativações) (T10) | UT | 1 pagamento, 1 grant |
+| Manual e integração em simultâneo no mesmo contrato | UT renewals-proofs | 1 pagamento |
+| O mesmo pedido 5× em paralelo (mesma chave) | UT | 1 pagamento, replay limpo |
+| A mesma referência em 2 contratos ao mesmo tempo | UT | 1 aceite |
+| Organização suspensa: pagamento gravado, ativação bloqueada, depois ativada (T02) | UT; E2E N8 | ✓ |
+| Comprovativo: só PDF real, 4 MB, OWNER da organização, mesmo ficheiro = 1, máx. 5; rejeição com email; aceitação na confirmação; rollback se o comprovativo não pertencer | UT; E2E P1–P6, R3–R4 | ✓ |
+| T11: renovação autorizada fica a aguardar pagamento e não prolonga | UT; E2E R2 | ✓ |
+| T12: renovação paga prolonga **uma vez** (contrato, grant, subscrição); replay e segunda confirmação recusados; por integração | UT; E2E R4 | ✓ |
+| T13: retirada antes → sem renovação; depois da preparação → cancelada e não pagável | UT; E2E R5 | ✓ |
+| Caducidade: sem pagamento no fim → `lapsed`, acesso termina | UT | ✓ |
+| T14 expiração: worker persiste; acesso e subscrição revogados; a Na Pista recusa com 403 | UT; E2E SS8; LIM E1 | ✓ |
+| Terminação pela UL revoga o acesso (T1) | E2E T1 | ✓ |
+| Emails: na fila só se a transação confirmar; dedupe; tentativas e `failed`; workers concorrentes sem envio duplo | UT email-outbox | ✓ |
+
+## 10. O que ainda precisa de validação em staging
+
+Não existe hoje um ambiente de staging da UL Platform nem da Na Pista. Antes de clientes reais, validar num
+ambiente igual ao de produção (BD de staging, mesmos poolers, mesmos hosts):
+
+1. **Migrações 0022–0028 numa cópia** da BD de produção (restauro ou branch Supabase): tempo, bloqueios,
+   avisos de truncagem de nomes.
+2. **Pooler em modo transação (Vercel, `prepare:false`)** com o código novo: `FOR UPDATE SKIP LOCKED`,
+   locks consultivos por transação (limites de membros e produtos), transações longas da ativação e da
+   renovação.
+3. **Envio do PDF pela função Vercel**: corpo até 4 MB, abaixo do limite de cerca de 4,5 MB; content-type
+   `application/pdf` com o CORS real; `Content-Disposition` exposto à Console.
+4. **SMTP AngoWeb a partir da Railway** (porta 465): entrega, SPF/DKIM alinhados, não ir para spam.
+5. **Worker na Railway com Node 24 (Railpack)**: varreduras de expiração, renovação (1 h) e email (15 s)
+   em simultâneo, e encerramento gracioso.
+6. **Supabase Auth em produção** com SMTP próprio: registo e confirmação de um cliente real.
+7. **Ciclo completo com a Na Pista alojada**: ativação → credencial gerida entregue pelo worker da Na
+   Pista → "Abrir Na Pista" → produtos e limites → expiração.
+8. **Previews Vercel** (`ul-client` usa valores públicos de produção no Preview): confirmar a proteção de
+   deployment dos previews.
