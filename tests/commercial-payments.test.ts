@@ -336,7 +336,7 @@ test("T10 — concurrent confirmations (different keys) and activations of one c
     ...Array.from({ length: 4 }, () => manual(contractId, paid())),
     ...Array.from({ length: 3 }, () => call("POST", `/platform/contracts/${contractId}/activation`, admin.token)),
   ]);
-  assert.equal(results.filter((r) => r.status === 201 && r.data?.payment).length, 1, results.map((r) => `${r.status}:${r.code}`).join(","));
+  assert.equal(results.filter((r) => r.status === 201 && r.data?.payment && "replayed" in r.data).length, 1, results.map((r) => `${r.status}:${r.code}`).join(","));
   assert.ok(results.every((r) => [200, 201, 409].includes(r.status)), results.map((r) => r.status).join(","));
   assert.equal((await paymentsOf(contractId)).length, 1);
   if ((await db.select().from(contracts).where(eq(contracts.id, contractId)))[0]!.status !== "active") {
