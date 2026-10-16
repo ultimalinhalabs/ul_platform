@@ -176,6 +176,13 @@
       "when": 1792063640105,
       "tag": "0024_self_service_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792073657977,
+      "tag": "0025_organization_invitations",
+      "breakpoints": true
     }
   ]
 }
