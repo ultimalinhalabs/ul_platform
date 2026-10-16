@@ -32,7 +32,7 @@ import { canonicalSha256 } from "../src/modules/commercial/canonicalJson.js";
 import { getEffectiveEntitlements } from "../src/modules/entitlements/service.js";
 import { isGrantEffective, isSubscriptionEffective } from "../src/modules/entitlements/effectiveness.js";
 import { createSubscription } from "../src/modules/subscriptions/service.js";
-import { createTestOrganization, createTestUser, grantTestApplicationAccess } from "./helpers.js";
+import { createTestOrganization, createTestUser, grantTestApplicationAccess, confirmTestPayment } from "./helpers.js";
 
 /**
  * Block 1D — contract → entitlement → activation, end to end over HTTP on the
@@ -125,7 +125,7 @@ async function pendingContract(items: Array<Record<string, unknown>>) {
   return { contractId: acc.data.contract.id as string, orgId: org.id, owner };
 }
 
-const activate = (contractId: string, token = admin.token, body?: unknown) => call("POST", `/platform/contracts/${contractId}/activation`, token, body);
+const activate = async (contractId: string, token = admin.token, body?: unknown) => (await confirmTestPayment(contractId, admin.user.id), call("POST", `/platform/contracts/${contractId}/activation`, token, body));
 
 async function counts(orgId: string) {
   const [g] = await db.select({ n: sql<number>`count(*)::int` }).from(entitlementGrants).where(eq(entitlementGrants.organizationId, orgId));
@@ -181,6 +181,16 @@ test("preview is read-only and shows what activation would create; valid activat
   const { contractId, orgId, owner } = await pendingContract([NA, QD, SERVICE]);
   const [cBefore] = await db.select().from(contracts).where(eq(contracts.id, contractId));
   const [cvBefore] = await db.select().from(contractVersions).where(eq(contractVersions.id, cBefore!.currentVersionId!));
+
+  // Migration 0023 — without a confirmed payment the preview names exactly that blocker, and activation is refused.
+  const unpaid = await call("GET", `/platform/contracts/${contractId}/activation-preview`, admin.token);
+  assert.equal(unpaid.data.activatable, false);
+  assert.deepEqual(unpaid.data.blockers.map((b: { code: string }) => b.code), ["PAYMENT_NOT_CONFIRMED"]);
+  assert.equal(unpaid.data.payment, null);
+  const refused = await call("POST", `/platform/contracts/${contractId}/activation`, admin.token);
+  assert.equal(refused.status, 409);
+  assert.equal(refused.code, "PAYMENT_NOT_CONFIRMED");
+  await confirmTestPayment(contractId, admin.user.id);
 
   const preview = await call("GET", `/platform/contracts/${contractId}/activation-preview`, admin.token);
   assert.equal(preview.status, 200);

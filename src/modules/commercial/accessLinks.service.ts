@@ -156,6 +156,7 @@ type Snapshot = {
       lineTotalMinor: string;
       billingPeriod: string;
       durationMonths: number | null;
+      durationDays?: number | null;
     }>;
   }>;
 };
@@ -197,6 +198,7 @@ export function publicProposalView(snapshot: Snapshot) {
         lineTotalMinor: i.lineTotalMinor,
         billingPeriod: i.billingPeriod,
         durationMonths: i.durationMonths,
+        durationDays: i.durationDays ?? null,
       })),
     })),
     acceptance: { available: false as const },

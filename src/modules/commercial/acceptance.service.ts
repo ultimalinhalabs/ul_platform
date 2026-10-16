@@ -146,6 +146,7 @@ export async function getRecipientProposal(proposalId: string, userId: string) {
         lineTotalMinor: i.lineTotalMinor,
         billingPeriod: i.billingPeriod,
         durationMonths: i.durationMonths,
+        durationDays: i.durationDays ?? null,
       })),
     })),
     consent: consent.available ? { key: consent.consent.key, version: consent.consent.version, status: consent.consent.status, text: consent.consent.text } : null,
@@ -222,6 +223,8 @@ async function existingResult(executor: Pick<typeof db, "select">, acceptanceId:
 async function isSameAcceptance(executor: Pick<typeof db, "select">, existing: typeof proposalAcceptances.$inferSelect, proposalId: string, input: AcceptInput, userId: string) {
   if (existing.proposalId !== proposalId || existing.versionId !== input.versionId || existing.optionId !== input.optionId) return false;
   if (existing.contentSha256 !== input.contentSha256 || existing.acceptedByUserId !== userId) return false;
+  // Who signs is part of the act: a replay must carry the same signer, or it is a different acceptance (409).
+  if (existing.signerName !== input.signerName || (existing.signerTitle ?? null) !== (input.signerTitle ?? null)) return false;
   if (!input.organization) return true;
   if ("id" in input.organization) return input.organization.id === existing.organizationId;
   const [org] = await executor.select({ name: organizations.name, createdBy: organizations.createdBy }).from(organizations).where(eq(organizations.id, existing.organizationId));
@@ -400,6 +403,7 @@ export async function acceptProposal(proposalId: string, input: AcceptInput, ide
         item.lineTotalMinor.toString() === snap.lineTotalMinor &&
         item.billingPeriod === snap.billingPeriod &&
         (item.durationMonths ?? null) === (snap.durationMonths ?? null) &&
+        (item.durationDays ?? null) === (snap.durationDays ?? null) &&
         (applicationKey ?? null) === (snap.application?.key ?? null) &&
         (planKey ?? null) === (snap.plan?.key ?? null);
       if (!consistent) throw new ConflictError("The accepted option does not match its frozen content");
@@ -417,6 +421,7 @@ export async function acceptProposal(proposalId: string, input: AcceptInput, ide
         lineTotalMinor: BigInt(snap.lineTotalMinor),
         billingPeriod: snap.billingPeriod,
         durationMonths: snap.durationMonths ?? null,
+        durationDays: snap.durationDays ?? null,
         entitlementSpec: snap.entitlementSpec ?? null,
       });
     }

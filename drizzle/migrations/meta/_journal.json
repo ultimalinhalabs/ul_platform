@@ -162,6 +162,20 @@
       "when": 1792018686848,
       "tag": "0022_organization_creation_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792063410998,
+      "tag": "0023_commercial_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792063640105,
+      "tag": "0024_self_service_catalog",
+      "breakpoints": true
     }
   ]
 }

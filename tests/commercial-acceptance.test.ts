@@ -378,6 +378,10 @@ test("idempotency: replay 200 with the same result; same key + different body 40
   assert.equal((await accept(r.token, p, p.advancedId, {}, key)).status, 409, "same key, different body");
   assert.equal((await accept(r.token, p, p.essencialId)).status, 200, "identical acceptance with a new key");
   assert.equal((await accept(r.token, p, p.advancedId)).status, 409, "another option after acceptance");
+  // Who signs is part of the act: another signer (or title) is a different acceptance, never answered with the original.
+  assert.equal((await accept(r.token, p, p.essencialId, { signerName: "Outra Pessoa" })).status, 409, "another signer after acceptance");
+  assert.equal((await accept(r.token, p, p.essencialId, { signerTitle: "Gerente" })).status, 409, "another signer title after acceptance");
+  assert.equal((await accept(r.token, p, p.essencialId, { signerName: "Outra Pessoa" }, key)).status, 409, "same key, another signer");
   assert.equal((await db.select().from(proposalAcceptances).where(eq(proposalAcceptances.proposalId, p.proposalId))).length, 1);
   assert.equal((await db.select().from(contracts).where(eq(contracts.sourceAcceptanceId, first.data.acceptance.id))).length, 1);
   assert.equal((await call("POST", `/proposals/${p.proposalId}/acceptance`, r.token, { versionId: p.versionId, optionId: p.essencialId, contentSha256: p.contentSha256, signerName: "A", consent: true })).status, 400, "Idempotency-Key is mandatory");

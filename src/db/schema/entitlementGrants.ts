@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { check, index, jsonb, pgTable, text, timestamp, unique, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { timestamps } from "./_helpers.js";
+import { apiKeys } from "./apiKeys.js";
 import { organizationApplicationAccess } from "./applicationAccess.js";
 import { applications } from "./applications.js";
 import { contractItems, contracts } from "./contracts.js";
@@ -48,6 +49,8 @@ export const entitlementGrants = pgTable(
     applicationAccessId: uuid("application_access_id").references(() => organizationApplicationAccess.id, { onDelete: "restrict" }),
     activatedAt: timestamp("activated_at", { withTimezone: true }),
     activatedBy: uuid("activated_by").references(() => users.id, { onDelete: "restrict" }),
+    /** Migration 0023 — set instead of activated_by when the activation was triggered by an authenticated payment integration (system actor). */
+    activatedByApiKeyId: uuid("activated_by_api_key_id").references(() => apiKeys.id, { onDelete: "restrict" }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     revokedBy: uuid("revoked_by").references(() => users.id, { onDelete: "restrict" }),
     revokeReason: text("revoke_reason"),
@@ -64,7 +67,7 @@ export const entitlementGrants = pgTable(
     check("entitlement_grants_period_check", sql`${table.endsAt} is null or ${table.startsAt} is null or ${table.endsAt} > ${table.startsAt}`),
     check(
       "entitlement_grants_activation_check",
-      sql`${table.status} = 'planned' or (${table.activatedAt} is not null and ${table.activatedBy} is not null) or ${table.status} = 'revoked'`,
+      sql`${table.status} = 'planned' or (${table.activatedAt} is not null and (${table.activatedBy} is not null or ${table.activatedByApiKeyId} is not null)) or ${table.status} = 'revoked'`,
     ),
     check("entitlement_grants_active_links_check", sql`${table.status} <> 'active' or ${table.subscriptionId} is not null`),
     check("entitlement_grants_revoked_check", sql`${table.status} <> 'revoked' or (${table.revokedAt} is not null and ${table.revokedBy} is not null)`),

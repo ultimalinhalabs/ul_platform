@@ -4,6 +4,7 @@ import { memberships, organizations, roles, users } from "../../db/schema/index.
 import { recordAuditEvent } from "../audit/service.js";
 import { assertOwnerRoleChangeAllowed } from "../authorization/service.js";
 import { getRoleByKey } from "../roles/service.js";
+import { assertMemberCapacityInTx, COUNTED_MEMBERSHIP_STATUSES } from "./memberLimit.js";
 import { ConflictError, NotFoundError } from "../../shared/errors.js";
 
 export async function findActiveMembership(userId: string, organizationId: string) {
@@ -101,28 +102,36 @@ export async function createMembership(input: {
   }
 
   const role = await getRoleByKey(input.roleKey);
+  const status = input.status ?? "active";
 
-  const [membership] = await db
-    .insert(memberships)
-    .values({
-      organizationId: input.organizationId,
-      userId: input.userId,
-      roleId: role.id,
-      status: input.status ?? "active",
-    })
-    .returning();
-  if (!membership) throw new Error("Failed to create membership");
+  return db.transaction(async (tx) => {
+    // The plan's members.max (memberLimit.ts): an active or invited member takes a place; a suspended one does not.
+    if ((COUNTED_MEMBERSHIP_STATUSES as readonly string[]).includes(status)) await assertMemberCapacityInTx(tx, input.organizationId);
+    const [membership] = await tx
+      .insert(memberships)
+      .values({
+        organizationId: input.organizationId,
+        userId: input.userId,
+        roleId: role.id,
+        status,
+      })
+      .returning();
+    if (!membership) throw new Error("Failed to create membership");
 
-  await recordAuditEvent({
-    actorUserId: input.actorUserId,
-    organizationId: input.organizationId,
-    action: "membership.created",
-    targetType: "membership",
-    targetId: membership.id,
-    metadata: { userId: input.userId, roleKey: input.roleKey },
+    await recordAuditEvent(
+      {
+        actorUserId: input.actorUserId,
+        organizationId: input.organizationId,
+        action: "membership.created",
+        targetType: "membership",
+        targetId: membership.id,
+        metadata: { userId: input.userId, roleKey: input.roleKey },
+      },
+      tx,
+    );
+
+    return membership;
   });
-
-  return membership;
 }
 
 export async function updateMembership(input: {
@@ -157,27 +166,37 @@ export async function updateMembership(input: {
     }
   }
 
-  const [updated] = await db
-    .update(memberships)
-    .set({
-      ...(nextRole ? { roleId: nextRole.id } : {}),
-      ...(input.status ? { status: input.status } : {}),
-      updatedAt: new Date(),
-    })
-    .where(eq(memberships.id, input.membershipId))
-    .returning();
-  if (!updated) throw new NotFoundError("Membership not found");
+  const counted = COUNTED_MEMBERSHIP_STATUSES as readonly string[];
+  const takesAPlace = !counted.includes(current.status) && !!input.status && counted.includes(input.status);
 
-  await recordAuditEvent({
-    actorUserId: input.actorUserId,
-    organizationId: input.organizationId,
-    action: "membership.updated",
-    targetType: "membership",
-    targetId: input.membershipId,
-    metadata: { roleKey: input.roleKey, status: input.status },
+  return db.transaction(async (tx) => {
+    // Reactivating a suspended member takes a place again under the plan's members.max (memberLimit.ts).
+    if (takesAPlace) await assertMemberCapacityInTx(tx, input.organizationId);
+    const [updated] = await tx
+      .update(memberships)
+      .set({
+        ...(nextRole ? { roleId: nextRole.id } : {}),
+        ...(input.status ? { status: input.status } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(memberships.id, input.membershipId))
+      .returning();
+    if (!updated) throw new NotFoundError("Membership not found");
+
+    await recordAuditEvent(
+      {
+        actorUserId: input.actorUserId,
+        organizationId: input.organizationId,
+        action: "membership.updated",
+        targetType: "membership",
+        targetId: input.membershipId,
+        metadata: { roleKey: input.roleKey, status: input.status },
+      },
+      tx,
+    );
+
+    return updated;
   });
-
-  return updated;
 }
 
 export async function removeMembership(input: {

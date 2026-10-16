@@ -31,3 +31,4 @@ export * from "./entitlementGrants.js";
 export * from "./credentialProvisioning.js";
 export * from "./leads.js";
 export * from "./organizationCreationRequests.js";
+export * from "./commercialPayments.js";
