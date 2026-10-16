@@ -123,7 +123,7 @@ export async function getRecipientProposal(proposalId: string, userId: string) {
   const snapshot = version.snapshot as VersionSnapshot;
   const [acceptance] = await db.select().from(proposalAcceptances).where(eq(proposalAcceptances.proposalId, proposal.id)).limit(1);
   const [contract] = acceptance ? await db.select().from(contracts).where(eq(contracts.sourceAcceptanceId, acceptance.id)).limit(1) : [];
-  const consent = currentAcceptanceConsent();
+  const consent = currentAcceptanceConsent(snapshot.terms.key);
   const open = ACCEPTABLE_PROPOSAL_STATUSES.has(proposal.status) && !acceptance && !!version.validUntil && version.validUntil.getTime() > Date.now();
   return {
     proposal: { id: proposal.id, number: proposal.number, status: proposal.status, prospectCompanyName: snapshot.proposal.prospectCompanyName, prospectTaxId: snapshot.proposal.prospectTaxId, recipientName: snapshot.proposal.recipientName, organizationId: proposal.organizationId },
@@ -245,8 +245,6 @@ async function assertOwnerOfActiveOrganization(userId: string, organizationId: s
  * (200); anything else that conflicts is a 409.
  */
 export async function acceptProposal(proposalId: string, input: AcceptInput, idempotencyKey: string, actor: AcceptanceActor) {
-  const consent = currentAcceptanceConsent();
-  if (!consent.available) throw new ConflictError("Proposal acceptance is not available: the official consent statement is not configured");
   if (await findActivePlatformAdmin(actor.userId)) throw new ForbiddenError("Platform administrators cannot accept proposals on behalf of a client");
   const email = await verifiedEmailOf(actor.userId);
 
@@ -283,6 +281,9 @@ export async function acceptProposal(proposalId: string, input: AcceptInput, ide
     if (!terms || terms.bodySha256 !== snapshot.terms.bodySha256 || terms.version !== snapshot.terms.version || terms.key !== snapshot.terms.key) {
       throw new ConflictError("The proposal terms do not match the sent version");
     }
+    // The consent statement belongs to the terms family (consent.ts); none approved for these terms ⇒ refused (fail closed).
+    const consent = currentAcceptanceConsent(terms.key);
+    if (!consent.available) throw new ConflictError("Proposal acceptance is not available: the official consent statement is not configured");
 
     // The organization that will hold the contract.
     let organizationId: string;

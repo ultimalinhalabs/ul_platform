@@ -153,16 +153,31 @@ after(async () => {
 });
 
 test("consent: test-only text is refused outside development/test (production and staging fail closed)", () => {
-  assert.equal(currentAcceptanceConsent({ nodeEnv: "production", appEnv: "production" }).available, false);
-  assert.equal(currentAcceptanceConsent({ nodeEnv: "production", appEnv: "development" }).available, false);
-  assert.equal(currentAcceptanceConsent({ nodeEnv: "test", appEnv: "staging" }).available, false);
-  const t = currentAcceptanceConsent({ nodeEnv: "test", appEnv: "development" });
+  assert.equal(currentAcceptanceConsent("ul-b2b-terms", { nodeEnv: "production", appEnv: "production" }).available, false);
+  assert.equal(currentAcceptanceConsent("ul-b2b-terms", { nodeEnv: "production", appEnv: "development" }).available, false);
+  assert.equal(currentAcceptanceConsent(null, { nodeEnv: "test", appEnv: "staging" }).available, false);
+  const t = currentAcceptanceConsent("ul-b2b-terms", { nodeEnv: "test", appEnv: "development" });
   assert.equal(t.available, true);
   if (t.available) {
     assert.equal(t.consent.status, "test_only");
     assert.match(t.consent.text, /^TEST ONLY — NÃO UTILIZAR EM PRODUÇÃO/);
     assert.equal(t.sha256, sha(t.consent.text));
   }
+});
+
+test("consent: the owner-approved Na Pista statement applies to np-tos-* terms, also in production; never to other terms", () => {
+  for (const environment of [{ nodeEnv: "production", appEnv: "production" }, { nodeEnv: "test", appEnv: "development" }]) {
+    const c = currentAcceptanceConsent("np-tos-001", environment);
+    assert.equal(c.available, true);
+    if (c.available) {
+      assert.equal(c.consent.status, "approved");
+      assert.equal(c.consent.key, "ul-na-pista-subscription-consent");
+      assert.match(c.consent.text, /^Declaro que tenho poderes para representar a organização indicada/);
+      assert.match(c.consent.text, /só é ativado após a confirmação do pagamento\.$/);
+      assert.equal(c.sha256, sha(c.consent.text));
+    }
+  }
+  assert.equal(currentAcceptanceConsent("qd-tos-001", { nodeEnv: "production", appEnv: "production" }).available, false);
 });
 
 test("valid acceptance by the verified recipient OWNER: 201, contract pending_activation with v1 and the chosen items; nothing activated", async () => {
