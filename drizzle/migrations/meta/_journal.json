@@ -211,6 +211,13 @@
       "when": 1792325096724,
       "tag": "0029_proposal_client_legal_data",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1792329114279,
+      "tag": "0030_terms_approval_permission",
+      "breakpoints": true
     }
   ]
 }
