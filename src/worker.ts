@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { env } from "./config/env.js";
 import { db, queryClient } from "./db/index.js";
 import { expireDueContracts } from "./modules/commercial/activation.service.js";
-import { prepareDueRenewals } from "./modules/commercial/renewals.service.js";
+import { prepareDueRenewals, sendExpiryNotices } from "./modules/commercial/renewals.service.js";
 import { deliverDueEmails, smtpConfigured } from "./modules/email/outbox.js";
 import { startWebhookRetryWorker } from "./modules/webhooks/delivery.js";
 import { logger } from "./shared/logger.js";
@@ -45,8 +45,11 @@ expiryTimer.unref();
 // Migration 0026 — prepares the next period (awaiting payment) of contracts with a standing renewal authorization.
 const renewalTimer = setInterval(() => {
   void prepareDueRenewals()
-    .then(({ created }) => {
+    .then(async ({ created }) => {
       if (created.length > 0) logger.info("Prepared renewals", { event: "commercial.renewals.prepared", count: created.length });
+      // Legal answer 5.3: email alert 7 days before the end when no renewal is authorized (deduplicated per period).
+      const { queued } = await sendExpiryNotices();
+      if (queued > 0) logger.info("Queued expiry notices", { event: "commercial.expiry_notices.queued", count: queued });
     })
     .catch((error) => logger.error("Renewal sweep failed", { event: "commercial.renewals.error", errorCode: error instanceof Error ? error.name : "unknown" }));
 }, env.RENEWAL_SWEEP_INTERVAL_MS);

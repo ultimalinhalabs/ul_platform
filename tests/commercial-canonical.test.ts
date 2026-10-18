@@ -62,7 +62,7 @@ test("version snapshot: same content in a different row order gives the same has
     ],
   });
   const base: SnapshotInput = {
-    proposal: { number: "UL-P-2026-000001", prospectCompanyName: "Empresa", prospectTaxId: null, recipientName: "Ana", recipientEmail: "ana@example.invalid" },
+    proposal: { number: "UL-P-2026-000001", prospectCompanyName: "Empresa", prospectTaxId: null, prospectAddress: null, prospectDetails: null, recipientName: "Ana", recipientEmail: "ana@example.invalid" },
     version: { versionNo: 1, currency: "AOA", validUntil: new Date("2026-12-31T00:00:00Z"), summary: "Resumo" },
     terms: { key: "termos", version: 1, title: "Termos", body: "corpo", bodySha256: sha256Hex("corpo") },
     options: [option("o1", "Essencial", 20_000_000n, 0), option("o2", "Advanced", 35_000_000n, 1)],

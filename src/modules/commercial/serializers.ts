@@ -37,6 +37,8 @@ export function proposalDto(p: ProposalRow) {
     status: p.status,
     prospectCompanyName: p.prospectCompanyName,
     prospectTaxId: p.prospectTaxId,
+    prospectAddress: p.prospectAddress,
+    prospectDetails: p.prospectDetails,
     recipientName: p.recipientName,
     recipientEmail: p.recipientEmail,
     organizationId: p.organizationId,

@@ -13,10 +13,24 @@ const specValueSchema: z.ZodType<SpecValue> = z.lazy(() =>
 );
 const entitlementSpecSchema = z.record(z.string().max(100), specValueSchema).nullable().optional();
 
+/**
+ * Legal answer 2.1 (2026-10-18): the client's NIF and registered address are MANDATORY to send or contract a proposal;
+ * licence (alvará), manager id (BI) and bank details are optional. Shared by the assisted and self-service channels.
+ */
+export const clientLegalDetailsSchema = z
+  .object({
+    licenseNumber: optionalText(100),
+    managerIdNumber: optionalText(50),
+    bankDetails: optionalText(200),
+  })
+  .strict();
+
 export const createProposalSchema = z
   .object({
     prospectCompanyName: text(200),
     prospectTaxId: optionalText(50),
+    prospectAddress: optionalText(300),
+    prospectDetails: clientLegalDetailsSchema.nullable().optional(),
     recipientName: text(200),
     recipientEmail: z.string().trim().toLowerCase().email().max(254),
     organizationId: z.string().uuid().nullable().optional(),
@@ -32,6 +46,8 @@ export const updateProposalSchema = z
   .object({
     prospectCompanyName: text(200).optional(),
     prospectTaxId: optionalText(50),
+    prospectAddress: optionalText(300),
+    prospectDetails: clientLegalDetailsSchema.nullable().optional(),
     recipientName: text(200).optional(),
     recipientEmail: z.string().trim().toLowerCase().email().max(254).optional(),
     organizationId: z.string().uuid().nullable().optional(),

@@ -84,7 +84,7 @@ async function ownerWithOrg(prefix = "owner") {
 }
 const configure = (body: Record<string, unknown>, token = admin.token) => call("PUT", "/platform/plans/NA_PISTA/STARTER/commercial", token, body);
 const selfService = { purchaseMode: "self_service", priceMinor: TEST_PRICE, currency: "AOA", periodDays: TEST_PERIOD_DAYS };
-const start = (orgId: string, token: string, body: Record<string, unknown> = { applicationKey: "NA_PISTA", planKey: "STARTER" }, key = `ss-${randomUUID()}`) =>
+const start = (orgId: string, token: string, body: Record<string, unknown> = { applicationKey: "NA_PISTA", planKey: "STARTER", client: { taxId: "5000000000", address: "Luanda, Rua de Teste 1" } }, key = `ss-${randomUUID()}`) =>
   call("POST", `/organizations/${orgId}/self-service/contracts`, token, body, { "idempotency-key": key });
 const accept = (token: string, offer: { proposalId: string; versionId: string; optionId: string; contentSha256: string }) =>
   call("POST", `/proposals/${offer.proposalId}/acceptance`, token, { versionId: offer.versionId, optionId: offer.optionId, contentSha256: offer.contentSha256, signerName: "Ana Representante", consent: true }, { "idempotency-key": `acc-${randomUUID()}` });
@@ -190,15 +190,15 @@ test("T17 — the same Idempotency-Key returns the same contracting; reused for 
   assert.equal(again.status, 200);
   assert.equal(again.data.proposalId, first.data.proposalId);
   assert.equal(again.data.contentSha256, first.data.contentSha256);
-  assert.equal((await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "BUSINESS" }, key)).status, 409);
+  assert.equal((await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "BUSINESS", client: { taxId: "5000000000", address: "Luanda, Rua de Teste 1" } }, key)).status, 409);
   const raced = await Promise.all(Array.from({ length: 4 }, () => start(orgId, owner.token, undefined, `ss-race-${key}`)));
   assert.equal(new Set(raced.map((r) => r.data.proposalId)).size, 1, raced.map((r) => r.status).join(","));
 });
 
 test("T15 — the client cannot set price, period or limits: extra fields are refused and the catalog is the only source", async () => {
   const { owner, orgId } = await ownerWithOrg();
-  assert.equal((await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "STARTER", priceMinor: "1" })).status, 400);
-  assert.equal((await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "STARTER", periodDays: 365 })).status, 400);
+  assert.equal((await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "STARTER", client: { taxId: "5000000000", address: "Luanda, Rua de Teste 1" }, priceMinor: "1" })).status, 400);
+  assert.equal((await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "STARTER", client: { taxId: "5000000000", address: "Luanda, Rua de Teste 1" }, periodDays: 365 })).status, 400);
   const offer = await start(orgId, owner.token);
   // A later catalog change never alters an accepted contract (frozen copy).
   const acc = await accept(owner.token, offer.data);
@@ -247,7 +247,7 @@ test("who may contract: OWNER of an active organization with a verified email �
   await db.update(organizations).set({ status: "active" }).where(eq(organizations.id, orgId));
   await db.insert(memberships).values({ userId: admin.user.id, organizationId: orgId, roleId: ownerRole!.id, status: "active" });
   assert.equal((await start(orgId, admin.token)).status, 403, "a platform admin cannot contract on behalf of a client");
-  assert.equal((await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "BUSINESS" })).status, 404, "a contractual plan is not self-service");
+  assert.equal((await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "BUSINESS", client: { taxId: "5000000000", address: "Luanda, Rua de Teste 1" } })).status, 404, "a contractual plan is not self-service");
   assert.equal((await start(orgId, owner.token, undefined, "short")).status, 400, "Idempotency-Key required");
 });
 
@@ -267,4 +267,18 @@ test("T03 — an offer that was never accepted has no contract: nothing can be p
   assert.equal(n!.n, 0);
   const [g] = await db.select({ n: count() }).from(entitlementGrants).where(eq(entitlementGrants.organizationId, orgId));
   assert.equal(g!.n, 0);
+});
+
+test("2.1 — self-service requires the client's NIF and registered address; they are frozen in the offer", async () => {
+  assert.equal((await configure({ ...selfService, termsTemplateId: approvedTermsId })).status, 200);
+  const { owner, orgId } = await ownerWithOrg("legal-ss");
+  const noClient = await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "STARTER" });
+  assert.equal(noClient.status, 400, "client data is mandatory");
+  const noAddress = await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "STARTER", client: { taxId: "5000000000" } });
+  assert.equal(noAddress.status, 400);
+  const ok = await start(orgId, owner.token, { applicationKey: "NA_PISTA", planKey: "STARTER", client: { legalName: "Loja Legal, Lda", taxId: "5009999999", address: "Luanda, Talatona", licenseNumber: "ALV-77" } });
+  assert.equal(ok.status, 201, ok.raw);
+  const view = await call("GET", `/proposals/${ok.data.proposalId}`, owner.token);
+  assert.equal(view.data.proposal.prospectCompanyName, "Loja Legal, Lda");
+  assert.equal(view.data.proposal.prospectTaxId, "5009999999");
 });

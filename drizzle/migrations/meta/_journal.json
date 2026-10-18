@@ -204,6 +204,13 @@
       "when": 1792146846707,
       "tag": "0028_email_outbox",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1792325096724,
+      "tag": "0029_proposal_client_legal_data",
+      "breakpoints": true
     }
   ]
 }

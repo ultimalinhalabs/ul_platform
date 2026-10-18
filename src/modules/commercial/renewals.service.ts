@@ -16,7 +16,7 @@ import {
 import { AppError, ConflictError, NotFoundError, OrganizationSuspendedError } from "../../shared/errors.js";
 import { recordAuditEvent } from "../audit/service.js";
 import { enqueueEmail } from "../email/outbox.js";
-import { formatMoney, renewalCreatedEmail } from "../email/templates.js";
+import { expiryNoticeEmail, formatMoney, renewalCreatedEmail } from "../email/templates.js";
 import { recordCommercialEvent } from "./events.js";
 import { clientContractUrl, ownerEmails, paymentMethodsConfigured, renewalReference } from "./notify.js";
 
@@ -286,6 +286,37 @@ export async function prepareDueRenewals(limit = 100): Promise<{ created: string
     if (renewalId) created.push(renewalId);
   }
   return { created };
+}
+
+/**
+ * Legal answer 5.3 (2026-10-18): RENEWAL_LEAD_DAYS before the end of an active contract WITHOUT a standing renewal
+ * authorization, its OWNERs get an email alert that access ends on that date. Idempotent per contract period (the
+ * outbox dedupe key includes the end date), so the sweep can run any number of times.
+ */
+export async function sendExpiryNotices(limit = 200): Promise<{ queued: number }> {
+  const rows = await db
+    .select({ contract: contracts, organizationName: organizations.name })
+    .from(contracts)
+    .innerJoin(organizations, eq(organizations.id, contracts.organizationId))
+    .leftJoin(contractRenewalAuthorizations, and(eq(contractRenewalAuthorizations.contractId, contracts.id), isNull(contractRenewalAuthorizations.withdrawnAt)))
+    .where(and(eq(contracts.status, "active"), isNull(contractRenewalAuthorizations.id), gt(contracts.endsAt, sql`now()`), lte(contracts.endsAt, sql`now() + make_interval(days => ${env.RENEWAL_LEAD_DAYS}::int)`)))
+    .limit(limit);
+  let queued = 0;
+  for (const { contract, organizationName } of rows) {
+    const terms = await renewalTerms(db, contract);
+    await db.transaction(async (tx) => {
+      for (const to of await ownerEmails(tx, contract.organizationId)) {
+        await enqueueEmail(tx, {
+          kind: "commercial.contract.expiry_notice",
+          to,
+          dedupeKey: `commercial.contract.expiry_notice:${contract.id}:${contract.endsAt!.toISOString()}:${to}`,
+          ...expiryNoticeEmail({ organizationName, contractNumber: contract.number, endsAt: contract.endsAt!, renewable: terms.eligible, contractUrl: clientContractUrl(contract.organizationId, contract.id) }),
+        });
+        queued++;
+      }
+    });
+  }
+  return { queued };
 }
 
 export type RenewalActor = { userId: string; requestId?: string } | { system: true; apiKeyId: string; requestId?: string };

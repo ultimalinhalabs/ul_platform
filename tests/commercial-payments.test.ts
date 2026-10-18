@@ -91,7 +91,7 @@ async function pendingContract() {
   const org = await createTestOrganization("pay-org", owner.user.id);
   const [ownerRole] = await db.select().from(roles).where(eq(roles.key, "OWNER"));
   await db.insert(memberships).values({ userId: owner.user.id, organizationId: org.id, roleId: ownerRole!.id, status: "active" });
-  const created = await call("POST", "/platform/proposals", admin.token, { prospectCompanyName: "Cliente", recipientName: "Dest", recipientEmail: owner.user.email, organizationId: org.id, validUntil: future(), termsTemplateId: termsId });
+  const created = await call("POST", "/platform/proposals", admin.token, { prospectTaxId: "5000000000", prospectAddress: "Luanda, Rua de Teste 1", prospectCompanyName: "Cliente", recipientName: "Dest", recipientEmail: owner.user.email, organizationId: org.id, validUntil: future(), termsTemplateId: termsId });
   assert.equal(created.status, 201, created.raw);
   const proposalId = created.data.id as string;
   const versionId = created.data.versions[0].id as string;

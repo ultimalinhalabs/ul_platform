@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test, { after } from "node:test";
 import { queryClient } from "../src/db/index.js";
 import { COMMERCIAL, ENTITLEMENTS, FORBIDDEN_ENTITLEMENTS, PLAN, TERMS_KEY, draftMarkers, termsBody } from "../scripts/load-na-pista-growth.js";
@@ -27,8 +28,12 @@ test("the terms key belongs to the family whose consent statement is approved", 
   assert.equal(c.available, true);
 });
 
-test("the current Annex A + B text is still a draft: approval is refused until the legal gaps are closed", () => {
-  const markers = draftMarkers(termsBody());
-  for (const m of ["RASCUNHO", "placeholder […]", "a completar", "serão definid(a)s"]) assert.ok(markers.includes(m), m);
-  assert.deepEqual(draftMarkers("A1. Partes\nPrestador: Airton Alexandre, Lda., NIF 5000000000. Cliente: a organização identificada no resumo contratual."), []);
+test("the final np-tos-001 text has no draft markers or placeholders; the historical draft still has them", () => {
+  assert.deepEqual(draftMarkers(termsBody()), []);
+  const draft = readFileSync("docs/commercial/terms/np-tos-001-draft.md", "utf8");
+  for (const m of ["RASCUNHO", "placeholder […]", "a completar", "serão definid(a)s"]) assert.ok(draftMarkers(draft).includes(m), m);
+  assert.deepEqual(draftMarkers("A1. Partes. Prestador: Airton Alexandre, Lda., NIF 5000000000. Cliente: a organização identificada no resumo contratual."), []);
+  // Answer 9.2 — mandatory elements present in the final text.
+  const body = termsBody();
+  for (const needle of ["NIF 5002819481", "comercial@ultimalinha.ao", "+244 944 111 842", "IVA incluído", "Lei n.º 22/11", "Comarca de Luanda", "não há direito de desistência", "ANEXO C"]) assert.ok(body.includes(needle), needle);
 });

@@ -11,7 +11,7 @@ import {
   proposals,
   proposalVersions,
 } from "../../db/schema/index.js";
-import { CommercialRecordImmutableError, ConflictError, NotFoundError, ValidationError } from "../../shared/errors.js";
+import { CommercialRecordImmutableError, ConflictError, NotFoundError, ValidationError, AppError } from "../../shared/errors.js";
 import { recordAuditEvent } from "../audit/service.js";
 import { CANONICAL_HASH_ALG, canonicalSha256 } from "./canonicalJson.js";
 import { type CommercialActor, recordCommercialEvent } from "./events.js";
@@ -211,6 +211,8 @@ export async function createProposal(input: z.infer<typeof createProposalSchema>
         number: await nextProposalNumber(tx),
         prospectCompanyName: input.prospectCompanyName,
         prospectTaxId: input.prospectTaxId ?? null,
+        prospectAddress: input.prospectAddress ?? null,
+        prospectDetails: input.prospectDetails ?? null,
         recipientName: input.recipientName,
         recipientEmail: input.recipientEmail,
         organizationId: input.organizationId ?? null,
@@ -270,6 +272,8 @@ export async function updateProposal(proposalId: string, patch: z.infer<typeof u
       .set({
         ...(patch.prospectCompanyName !== undefined ? { prospectCompanyName: patch.prospectCompanyName } : {}),
         ...(patch.prospectTaxId !== undefined ? { prospectTaxId: patch.prospectTaxId } : {}),
+        ...(patch.prospectAddress !== undefined ? { prospectAddress: patch.prospectAddress } : {}),
+        ...(patch.prospectDetails !== undefined ? { prospectDetails: patch.prospectDetails } : {}),
         ...(patch.recipientName !== undefined ? { recipientName: patch.recipientName } : {}),
         ...(patch.recipientEmail !== undefined ? { recipientEmail: patch.recipientEmail } : {}),
         ...(patch.organizationId !== undefined ? { organizationId: patch.organizationId } : {}),
@@ -496,9 +500,16 @@ export async function deleteItem(proposalId: string, versionId: string, optionId
 
 // ---------------------------------------------------------------------------- send
 
+/** Legal answer 2.1 (2026-10-18): no proposal is sent or contracted without the client's NIF and registered address. */
+export function assertClientLegalData(proposal: { prospectTaxId: string | null; prospectAddress: string | null }) {
+  if (!proposal.prospectTaxId?.trim() || !proposal.prospectAddress?.trim()) {
+    throw new AppError(409, "CLIENT_LEGAL_DATA_REQUIRED", "The client's NIF and registered address are required");
+  }
+}
+
 /** Input of the canonical snapshot: exactly what the client is shown, nothing mutable or internal. */
 export interface SnapshotInput {
-  proposal: Pick<ProposalRow, "number" | "prospectCompanyName" | "prospectTaxId" | "recipientName" | "recipientEmail">;
+  proposal: Pick<ProposalRow, "number" | "prospectCompanyName" | "prospectTaxId" | "prospectAddress" | "prospectDetails" | "recipientName" | "recipientEmail">;
   version: Pick<VersionRow, "versionNo" | "currency" | "validUntil" | "summary">;
   terms: { key: string; version: number; title: string; body: string; bodySha256: string };
   options: Awaited<ReturnType<typeof loadOptionsWithItems>>;
@@ -520,6 +531,8 @@ export function buildVersionSnapshot(input: SnapshotInput) {
       number: input.proposal.number,
       prospectCompanyName: input.proposal.prospectCompanyName,
       prospectTaxId: input.proposal.prospectTaxId ?? null,
+      prospectAddress: input.proposal.prospectAddress ?? null,
+      prospectDetails: (input.proposal.prospectDetails as Record<string, string | null> | null) ?? null,
       recipientName: input.proposal.recipientName,
       recipientEmail: input.proposal.recipientEmail,
     },
@@ -587,6 +600,7 @@ export async function sendVersion(proposalId: string, versionId: string, actor: 
     const [terms] = await tx.select().from(commercialTermsTemplates).where(eq(commercialTermsTemplates.id, version.termsTemplateId)).limit(1);
     if (!terms || terms.status !== "approved") throw new ConflictError("Approved terms are required to send a proposal");
     if (!version.validUntil || version.validUntil.getTime() <= Date.now()) throw new ConflictError("valid_until must be set in the future to send a proposal");
+    assertClientLegalData(proposal);
 
     const snapshot = buildVersionSnapshot({
       proposal,
@@ -653,6 +667,7 @@ export async function createSelfServiceProposalInTx(
     userId: string;
     recipientEmail: string;
     organization: { id: string; name: string };
+    client: { legalName: string; taxId: string; address: string; details: Record<string, string | null> | null };
     application: { id: string; key: string; name: string };
     plan: { id: string; key: string; name: string; priceMinor: bigint; currency: string; periodDays: number };
     terms: { id: string; key: string; version: number; title: string; body: string; bodySha256: string };
@@ -666,8 +681,10 @@ export async function createSelfServiceProposalInTx(
     .insert(proposals)
     .values({
       number: await nextProposalNumber(tx),
-      prospectCompanyName: input.organization.name,
-      prospectTaxId: null,
+      prospectCompanyName: input.client.legalName,
+      prospectTaxId: input.client.taxId,
+      prospectAddress: input.client.address,
+      prospectDetails: input.client.details,
       recipientName: input.organization.name,
       recipientEmail: input.recipientEmail,
       organizationId: input.organization.id,

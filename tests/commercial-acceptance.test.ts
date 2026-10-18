@@ -101,7 +101,7 @@ let termsBody: string;
 /** A SENT proposal (two options: "Essencial" recommended + "Advanced"), addressed to `recipientEmail`. */
 async function sentProposal(recipientEmail: string, organizationId: string | null, opts: { validUntil?: string; extraItem?: Record<string, unknown> } = {}) {
   const created = await call("POST", "/platform/proposals", admin.token, {
-    prospectCompanyName: "Cliente de Teste",
+    prospectAddress: "Luanda, Rua de Teste 1", prospectCompanyName: "Cliente de Teste",
     prospectTaxId: "000000000",
     recipientName: "Destinatário",
     recipientEmail,

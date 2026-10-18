@@ -16,8 +16,11 @@ import {
   proposalVersions,
   users,
 } from "../../db/schema/index.js";
-import { ConflictError, ForbiddenError, NotFoundError, OrganizationSuspendedError } from "../../shared/errors.js";
+import { AppError, ConflictError, ForbiddenError, NotFoundError, OrganizationSuspendedError } from "../../shared/errors.js";
 import { recordAuditEvent } from "../audit/service.js";
+import { enqueueEmail } from "../email/outbox.js";
+import { contractCopyEmail } from "../email/templates.js";
+import { clientContractUrl } from "./notify.js";
 import { findActiveMembership } from "../memberships/service.js";
 import { createOrganization, lockAndAssertCreationWindow } from "../organizations/service.js";
 import { findActivePlatformAdmin } from "../platformAdmins/service.js";
@@ -183,6 +186,9 @@ export function buildContractVersionSnapshot(input: ContractSnapshotInput) {
       organization: { id: input.client.organizationId, name: input.client.organizationName },
       companyName: input.versionSnapshot.proposal.prospectCompanyName,
       taxId: input.versionSnapshot.proposal.prospectTaxId ?? null,
+      // Migration 0029 (legal answer 2.1): registered address and optional identification, as frozen in the proposal.
+      address: input.versionSnapshot.proposal.prospectAddress ?? null,
+      details: input.versionSnapshot.proposal.prospectDetails ?? null,
       signer: { name: input.acceptance.signerName, title: input.acceptance.signerTitle ?? null, email: input.acceptance.signerEmail },
     },
   };
@@ -274,6 +280,10 @@ export async function acceptProposal(proposalId: string, input: AcceptInput, ide
     if (!version.validUntil || version.validUntil.getTime() <= Date.now()) throw new ConflictError("This proposal version has expired");
     if (version.contentSha256 !== input.contentSha256) throw new ConflictError("The proposal content has changed; reload it before accepting");
     const snapshot = version.snapshot as VersionSnapshot;
+    // Legal answer 2.1 — defensive: a version frozen without the client's NIF and address is never contracted.
+    if (!snapshot.proposal.prospectTaxId?.trim() || !snapshot.proposal.prospectAddress?.trim()) {
+      throw new AppError(409, "CLIENT_LEGAL_DATA_REQUIRED", "The client's NIF and registered address are required");
+    }
     const option = snapshot.options.find((o) => o.id === input.optionId);
     const [optionRow] = await tx.select({ id: proposalOptions.id }).from(proposalOptions).where(and(eq(proposalOptions.id, input.optionId), eq(proposalOptions.versionId, version.id))).limit(1);
     if (!option || !optionRow) throw new NotFoundError("Proposal option not found");
@@ -462,6 +472,26 @@ export async function acceptProposal(proposalId: string, input: AcceptInput, ide
       },
       tx,
     );
+
+    // Legal answer 3.2 — the signer's copy of the contract, queued in this transaction (sent by the worker).
+    await enqueueEmail(tx, {
+      kind: "commercial.contract.copy",
+      to: acceptance!.signerEmail,
+      dedupeKey: `commercial.contract.copy:${contract!.id}`,
+      ...contractCopyEmail({
+        contractNumber,
+        provider: parties.provider,
+        client: { companyName: parties.client.companyName, taxId: parties.client.taxId, address: parties.client.address },
+        signer: { name: acceptance!.signerName, email: acceptance!.signerEmail },
+        optionName: option.name,
+        totalMinor: option.totalMinor,
+        currency: snapshot.version.currency,
+        acceptedAt: acceptance!.acceptedAt,
+        terms: { title: terms.title, version: terms.version, bodySha256: terms.bodySha256, body: terms.body },
+        contractSha256,
+        contractUrl: clientContractUrl(organizationId, contract!.id),
+      }),
+    });
 
     return { created: true, acceptance: acceptanceDto(acceptance!), contract: contractSummaryDto(withVersion!, contractVersion!) };
   });

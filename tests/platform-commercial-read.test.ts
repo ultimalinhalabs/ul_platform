@@ -128,7 +128,7 @@ before(async () => {
   const org = await createTestOrganization("pcr-org", owner.user.id);
   const [ownerRole] = await db.select().from(roles).where(eq(roles.key, "OWNER"));
   await db.insert(memberships).values({ userId: owner.user.id, organizationId: org.id, roleId: ownerRole!.id, status: "active" });
-  const created = await call("POST", "/platform/proposals", admin.token, { prospectCompanyName: "Cliente PCR", recipientName: "Dest", recipientEmail: owner.user.email, organizationId: org.id, validUntil: future(), termsTemplateId: termsId });
+  const created = await call("POST", "/platform/proposals", admin.token, { prospectTaxId: "5000000000", prospectAddress: "Luanda, Rua de Teste 1", prospectCompanyName: "Cliente PCR", recipientName: "Dest", recipientEmail: owner.user.email, organizationId: org.id, validUntil: future(), termsTemplateId: termsId });
   assert.equal(created.status, 201, created.raw);
   const v = `/platform/proposals/${created.data.id}/versions/${created.data.versions[0].id}`;
   const opt = await call("POST", `${v}/options`, admin.token, { name: "Opção", isRecommended: true });

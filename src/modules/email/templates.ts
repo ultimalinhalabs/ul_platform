@@ -132,3 +132,54 @@ export function proofRejectedEmail(input: { organizationName: string; contractNu
     { label: "Abrir o contrato", url: input.contractUrl },
   );
 }
+
+/** Legal answer 3.2 (2026-10-18): after accepting, the signer receives a copy of the contract (summary + full terms). */
+export function contractCopyEmail(input: {
+  contractNumber: string;
+  provider: { legalName: string; nif: string; registeredAddress: string };
+  client: { companyName: string; taxId: string | null; address: string | null };
+  signer: { name: string; email: string };
+  optionName: string;
+  totalMinor: string;
+  currency: string;
+  acceptedAt: Date;
+  terms: { title: string; version: number; bodySha256: string; body: string };
+  contractSha256: string;
+  contractUrl: string;
+}): EmailMessage {
+  return render(
+    `Cópia do contrato ${input.contractNumber}`,
+    [
+      `Olá ${input.signer.name},`,
+      `Recebemos a sua aceitação. Este email é a sua cópia do contrato ${input.contractNumber}. O acesso só é ativado depois de o pagamento ser confirmado.`,
+      [
+        "Resumo do contrato:",
+        `Prestador: ${input.provider.legalName}, NIF ${input.provider.nif}, ${input.provider.registeredAddress}`,
+        `Cliente: ${input.client.companyName}${input.client.taxId ? `, NIF ${input.client.taxId}` : ""}${input.client.address ? `, ${input.client.address}` : ""}`,
+        `Plano: ${input.optionName}`,
+        `Preço: ${formatMoney(input.totalMinor, input.currency)} (IVA incluído)`,
+        `Aceite por: ${input.signer.name} <${input.signer.email}> em ${formatDate(input.acceptedAt)}`,
+        `Termos: ${input.terms.title}, versão ${input.terms.version} (impressão digital ${input.terms.bodySha256.slice(0, 16)}…)`,
+        `Impressão digital do contrato: ${input.contractSha256.slice(0, 16)}…`,
+      ].join("\n"),
+      "Texto integral dos termos aceites:",
+      input.terms.body,
+    ],
+    { label: "Abrir o contrato", url: input.contractUrl },
+  );
+}
+
+/** Legal answer 5.3 (2026-10-18): 7 days before the end, an email alert when no renewal is authorized. */
+export function expiryNoticeEmail(input: { organizationName: string; contractNumber: string; endsAt: Date; renewable: boolean; contractUrl: string }): EmailMessage {
+  return render(
+    `O acesso do contrato ${input.contractNumber} termina a ${formatDate(input.endsAt)}`,
+    [
+      "Olá,",
+      `O período do contrato ${input.contractNumber} de ${input.organizationName} termina a ${formatDate(input.endsAt)}. Não há renovação autorizada: nessa data o acesso termina.`,
+      input.renewable
+        ? "Para continuar, autorize a renovação na página do contrato. O novo período só começa depois de o pagamento ser confirmado."
+        : "Para continuar, contacte a Última Linha (comercial@ultimalinha.ao).",
+    ],
+    { label: "Abrir o contrato", url: input.contractUrl },
+  );
+}
