@@ -322,6 +322,7 @@ export async function createVersion(proposalId: string, actor: CommercialActor) 
           lineTotalMinor: item.lineTotalMinor,
           billingPeriod: item.billingPeriod,
           durationMonths: item.durationMonths,
+          durationDays: item.durationDays,
           entitlementSpec: item.entitlementSpec,
         });
       }
@@ -437,6 +438,7 @@ export async function createItem(proposalId: string, versionId: string, optionId
       lineTotalMinor: lineTotalMinor(input.quantity, input.unitPriceMinor),
       billingPeriod: input.billingPeriod,
       durationMonths: input.durationMonths ?? null,
+      durationDays: input.durationDays ?? null,
       entitlementSpec: input.entitlementSpec ?? null,
     });
     await recomputeOptionTotal(tx, optionId);
@@ -469,6 +471,7 @@ export async function updateItem(proposalId: string, versionId: string, optionId
         ...(patch.description !== undefined ? { description: patch.description } : {}),
         ...(patch.billingPeriod !== undefined ? { billingPeriod: patch.billingPeriod } : {}),
         ...(patch.durationMonths !== undefined ? { durationMonths: patch.durationMonths } : {}),
+        ...(patch.durationDays !== undefined ? { durationDays: patch.durationDays } : {}),
         ...(patch.entitlementSpec !== undefined ? { entitlementSpec: patch.entitlementSpec } : {}),
         ...(patch.sort !== undefined ? { sort: patch.sort } : {}),
         updatedAt: sql`now()`,
@@ -546,6 +549,7 @@ export function buildVersionSnapshot(input: SnapshotInput) {
         lineTotalMinor: item.lineTotalMinor.toString(),
         billingPeriod: item.billingPeriod,
         durationMonths: item.durationMonths ?? null,
+        ...(item.durationDays != null ? { durationDays: item.durationDays as number } : {}),
         entitlementSpec: item.entitlementSpec ?? null,
       })),
     })),
@@ -627,4 +631,111 @@ export async function sendVersion(proposalId: string, versionId: string, actor: 
     );
   });
   return getVersionDetail(proposalId, versionId);
+}
+
+// ---------------------------------------------------------------------------- self-service (migration 0024)
+
+/**
+ * A self-service contracting is the SAME commercial record as an assisted
+ * one: a proposal (channel `self_service`) with one version, one option and
+ * one `application_plan` item, built here from the CATALOG plan — never from
+ * client input — and frozen exactly like sendVersion does (canonical
+ * snapshot + SHA-256, approved terms, immutability triggers). The client then
+ * accepts it through the existing acceptance path, which creates the contract
+ * (pending_activation); activation still needs the confirmed payment.
+ * The caller (selfService.service.ts) has already checked the person (verified
+ * email, OWNER of the active organization) and the plan; this function runs
+ * inside the caller's transaction.
+ */
+export async function createSelfServiceProposalInTx(
+  tx: Tx,
+  input: {
+    userId: string;
+    recipientEmail: string;
+    organization: { id: string; name: string };
+    application: { id: string; key: string; name: string };
+    plan: { id: string; key: string; name: string; priceMinor: bigint; currency: string; periodDays: number };
+    terms: { id: string; key: string; version: number; title: string; body: string; bodySha256: string };
+    validUntil: Date;
+    idempotencyKey: string;
+    requestId?: string;
+  },
+) {
+  const actorBase = { organizationId: input.organization.id, actorType: "user" as const, actorUserId: input.userId, correlationId: input.requestId };
+  const [proposal] = await tx
+    .insert(proposals)
+    .values({
+      number: await nextProposalNumber(tx),
+      prospectCompanyName: input.organization.name,
+      prospectTaxId: null,
+      recipientName: input.organization.name,
+      recipientEmail: input.recipientEmail,
+      organizationId: input.organization.id,
+      ownerUserId: input.userId,
+      createdBy: input.userId,
+      channel: "self_service",
+      requestIdempotencyKey: input.idempotencyKey,
+    })
+    .returning();
+  const [version] = await tx
+    .insert(proposalVersions)
+    .values({
+      proposalId: proposal!.id,
+      versionNo: 1,
+      currency: input.plan.currency,
+      validUntil: input.validUntil,
+      summary: `${input.plan.name} — contratação self-service`,
+      termsTemplateId: input.terms.id,
+      createdBy: input.userId,
+    })
+    .returning();
+  const [option] = await tx
+    .insert(proposalOptions)
+    .values({ versionId: version!.id, sort: 0, name: input.plan.name, isRecommended: true, totalMinor: input.plan.priceMinor })
+    .returning();
+  await tx.insert(proposalItems).values({
+    optionId: option!.id,
+    sort: 0,
+    kind: "application_plan",
+    title: `${input.application.name} — ${input.plan.name}`,
+    applicationId: input.application.id,
+    planId: input.plan.id,
+    quantity: 1,
+    unitPriceMinor: input.plan.priceMinor,
+    lineTotalMinor: input.plan.priceMinor,
+    billingPeriod: "one_time",
+    durationDays: input.plan.periodDays,
+    entitlementSpec: null,
+  });
+
+  const options = await loadOptionsWithItems(tx, version!.id);
+  const snapshot = buildVersionSnapshot({ proposal: proposal!, version: version!, terms: input.terms, options });
+  const contentSha256 = canonicalSha256(snapshot);
+  await tx
+    .update(proposalVersions)
+    .set({ status: "sent", sentAt: sql`now()`, sentBy: input.userId, snapshot, contentSha256, hashAlg: CANONICAL_HASH_ALG, updatedAt: sql`now()` })
+    .where(eq(proposalVersions.id, version!.id));
+  await tx.update(proposals).set({ status: "sent", currentVersionId: version!.id, updatedAt: sql`now()` }).where(eq(proposals.id, proposal!.id));
+
+  await recordCommercialEvent(tx, { ...actorBase, aggregateType: "proposal", aggregateId: proposal!.id, eventType: "proposal.created", payload: { number: proposal!.number, channel: "self_service", planKey: input.plan.key, applicationKey: input.application.key } });
+  await recordCommercialEvent(tx, {
+    ...actorBase,
+    aggregateType: "proposal_version",
+    aggregateId: version!.id,
+    eventType: "proposal.version.sent",
+    idempotencyKey: `proposal.version.sent:${version!.id}`,
+    payload: { proposalId: proposal!.id, versionNo: 1, contentSha256, hashAlg: CANONICAL_HASH_ALG, channel: "self_service" },
+  });
+  await recordAuditEvent(
+    {
+      actorUserId: input.userId,
+      organizationId: input.organization.id,
+      action: "commercial.self_service.contracting.started",
+      targetType: "proposal",
+      targetId: proposal!.id,
+      metadata: { proposalNumber: proposal!.number, applicationKey: input.application.key, planKey: input.plan.key, contentSha256 },
+    },
+    tx,
+  );
+  return { proposalId: proposal!.id, versionId: version!.id, optionId: option!.id, contentSha256 };
 }

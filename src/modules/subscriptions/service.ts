@@ -93,7 +93,8 @@ export async function createSubscription(
     organizationId: string;
     applicationKey: string;
     planKey: string;
-    actorUserId: string;
+    /** null = the platform itself (system actor: payment-integration activation, expiry). */
+    actorUserId: string | null;
     /** Block 1D — contractual subscriptions carry the grant's period; omitted, the period starts now with no fixed end (as before). */
     currentPeriodStart?: Date;
     currentPeriodEnd?: Date | null;
@@ -164,7 +165,7 @@ async function insertSubscription(
 
   await recordAuditEvent(
     {
-      actorUserId: input.actorUserId,
+      actorUserId: input.actorUserId ?? undefined,
       organizationId: input.organizationId,
       applicationId: target.applicationId,
       action: "subscription.created",
@@ -208,7 +209,7 @@ export async function cancelSubscription(
   input: {
     organizationId: string;
     subscriptionId: string;
-    actorUserId: string;
+    actorUserId: string | null;
   },
   /** Block 1D — the caller's transaction (grant revocation); omitted, behaviour is unchanged. */
   executor: typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0] = db,
@@ -232,7 +233,7 @@ export async function cancelSubscription(
 
   await recordAuditEvent(
     {
-      actorUserId: input.actorUserId,
+      actorUserId: input.actorUserId ?? undefined,
       organizationId: input.organizationId,
       action: "subscription.canceled",
       targetType: "subscription",

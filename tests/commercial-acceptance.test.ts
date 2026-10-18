@@ -153,16 +153,31 @@ after(async () => {
 });
 
 test("consent: test-only text is refused outside development/test (production and staging fail closed)", () => {
-  assert.equal(currentAcceptanceConsent({ nodeEnv: "production", appEnv: "production" }).available, false);
-  assert.equal(currentAcceptanceConsent({ nodeEnv: "production", appEnv: "development" }).available, false);
-  assert.equal(currentAcceptanceConsent({ nodeEnv: "test", appEnv: "staging" }).available, false);
-  const t = currentAcceptanceConsent({ nodeEnv: "test", appEnv: "development" });
+  assert.equal(currentAcceptanceConsent("ul-b2b-terms", { nodeEnv: "production", appEnv: "production" }).available, false);
+  assert.equal(currentAcceptanceConsent("ul-b2b-terms", { nodeEnv: "production", appEnv: "development" }).available, false);
+  assert.equal(currentAcceptanceConsent(null, { nodeEnv: "test", appEnv: "staging" }).available, false);
+  const t = currentAcceptanceConsent("ul-b2b-terms", { nodeEnv: "test", appEnv: "development" });
   assert.equal(t.available, true);
   if (t.available) {
     assert.equal(t.consent.status, "test_only");
     assert.match(t.consent.text, /^TEST ONLY — NÃO UTILIZAR EM PRODUÇÃO/);
     assert.equal(t.sha256, sha(t.consent.text));
   }
+});
+
+test("consent: the owner-approved Na Pista statement applies to np-tos-* terms, also in production; never to other terms", () => {
+  for (const environment of [{ nodeEnv: "production", appEnv: "production" }, { nodeEnv: "test", appEnv: "development" }]) {
+    const c = currentAcceptanceConsent("np-tos-001", environment);
+    assert.equal(c.available, true);
+    if (c.available) {
+      assert.equal(c.consent.status, "approved");
+      assert.equal(c.consent.key, "ul-na-pista-subscription-consent");
+      assert.match(c.consent.text, /^Declaro que tenho poderes para representar a organização indicada/);
+      assert.match(c.consent.text, /só é ativado após a confirmação do pagamento\.$/);
+      assert.equal(c.sha256, sha(c.consent.text));
+    }
+  }
+  assert.equal(currentAcceptanceConsent("qd-tos-001", { nodeEnv: "production", appEnv: "production" }).available, false);
 });
 
 test("valid acceptance by the verified recipient OWNER: 201, contract pending_activation with v1 and the chosen items; nothing activated", async () => {
@@ -378,6 +393,10 @@ test("idempotency: replay 200 with the same result; same key + different body 40
   assert.equal((await accept(r.token, p, p.advancedId, {}, key)).status, 409, "same key, different body");
   assert.equal((await accept(r.token, p, p.essencialId)).status, 200, "identical acceptance with a new key");
   assert.equal((await accept(r.token, p, p.advancedId)).status, 409, "another option after acceptance");
+  // Who signs is part of the act: another signer (or title) is a different acceptance, never answered with the original.
+  assert.equal((await accept(r.token, p, p.essencialId, { signerName: "Outra Pessoa" })).status, 409, "another signer after acceptance");
+  assert.equal((await accept(r.token, p, p.essencialId, { signerTitle: "Gerente" })).status, 409, "another signer title after acceptance");
+  assert.equal((await accept(r.token, p, p.essencialId, { signerName: "Outra Pessoa" }, key)).status, 409, "same key, another signer");
   assert.equal((await db.select().from(proposalAcceptances).where(eq(proposalAcceptances.proposalId, p.proposalId))).length, 1);
   assert.equal((await db.select().from(contracts).where(eq(contracts.sourceAcceptanceId, first.data.acceptance.id))).length, 1);
   assert.equal((await call("POST", `/proposals/${p.proposalId}/acceptance`, r.token, { versionId: p.versionId, optionId: p.essencialId, contentSha256: p.contentSha256, signerName: "A", consent: true })).status, 400, "Idempotency-Key is mandatory");
@@ -458,6 +477,27 @@ test("rollback: a failure after creating the organization leaves no organization
   assert.equal(prop!.organizationId, null);
   const accepted = await db.select().from(commercialEvents).where(and(eq(commercialEvents.eventType, "proposal.accepted"), sql`${commercialEvents.payload}->>'proposalId' = ${p.proposalId}`));
   assert.equal(accepted.length, 0);
+});
+
+test("the per-user organization creation window also guards acceptance with organization.create (429), never an existing organization", async () => {
+  const previous = env.ORGANIZATION_CREATION_DAILY_LIMIT;
+  env.ORGANIZATION_CREATION_DAILY_LIMIT = 2;
+  try {
+    const r = await person("window");
+    await orgOwnedBy(r.user.id, "b1c-window-1");
+    const owned = await orgOwnedBy(r.user.id, "b1c-window-2"); // the user has now created 2 organizations in 24 h
+    const p = await sentProposal(r.user.email, null);
+    const name = `Janela Org ${randomBytes(3).toString("hex")}`;
+    const refused = await accept(r.token, p, p.essencialId, { organization: { create: { name } } });
+    assert.equal(refused.status, 429, refused.raw);
+    assert.equal(refused.code, "ORGANIZATION_CREATION_LIMIT");
+    assert.equal((await db.select().from(organizations).where(eq(organizations.name, name))).length, 0);
+    assert.equal((await db.select().from(proposalAcceptances).where(eq(proposalAcceptances.proposalId, p.proposalId))).length, 0);
+    const intoOwned = await accept(r.token, p, p.essencialId, { organization: { id: owned } });
+    assert.equal(intoOwned.status, 201, "accepting into an organization the user already owns creates nothing and is not limited");
+  } finally {
+    env.ORGANIZATION_CREATION_DAILY_LIMIT = previous;
+  }
 });
 
 test("tenant isolation of contracts: only an OWNER of THAT organization reads them", async () => {

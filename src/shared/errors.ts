@@ -41,6 +41,20 @@ export class OrganizationSuspendedError extends AppError {
   }
 }
 
+/** The identity provider has not confirmed the caller's email (auth.users.email_confirmed_at); never read from user_metadata. */
+export class EmailNotVerifiedError extends AppError {
+  constructor(message = "A verified email address is required") {
+    super(403, "EMAIL_NOT_VERIFIED", message);
+  }
+}
+
+/** The caller created too many organizations within the configured window (ORGANIZATION_CREATION_DAILY_LIMIT). */
+export class OrganizationCreationLimitError extends AppError {
+  constructor(message = "Too many organizations created recently — please try again later") {
+    super(429, "ORGANIZATION_CREATION_LIMIT", message);
+  }
+}
+
 /** Block 0 — the plan is contracted through Última Linha (proposal → contract), not self-subscribed. */
 export class PlanRequiresContractError extends AppError {
   constructor(message = "This plan is contracted through Última Linha and cannot be self-subscribed") {

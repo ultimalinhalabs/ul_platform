@@ -155,6 +155,55 @@
       "when": 1791978507217,
       "tag": "0021_landing_leads",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792018686848,
+      "tag": "0022_organization_creation_idempotency",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792063410998,
+      "tag": "0023_commercial_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792063640105,
+      "tag": "0024_self_service_catalog",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792073657977,
+      "tag": "0025_organization_invitations",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1792146771914,
+      "tag": "0026_contract_renewals",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1792146844466,
+      "tag": "0027_payment_proofs",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1792146846707,
+      "tag": "0028_email_outbox",
+      "breakpoints": true
     }
   ]
 }

@@ -85,6 +85,7 @@ export function itemDto(i: ItemRow, refs: ItemRefs) {
     lineTotalMinor: minorToString(i.lineTotalMinor),
     billingPeriod: i.billingPeriod,
     durationMonths: i.durationMonths,
+    durationDays: i.durationDays,
     entitlementSpec: i.entitlementSpec,
   };
 }
@@ -151,6 +152,7 @@ export function contractItemDto(i: typeof contractItems.$inferSelect) {
     lineTotalMinor: minorToString(i.lineTotalMinor),
     billingPeriod: i.billingPeriod,
     durationMonths: i.durationMonths,
+    durationDays: i.durationDays,
   };
 }
 

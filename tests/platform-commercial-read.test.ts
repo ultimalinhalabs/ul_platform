@@ -20,7 +20,7 @@ import {
 import { seed } from "../src/db/seed/index.js";
 import { EXPECTED_ISSUER } from "../src/integrations/supabase/jwt.js";
 import { createOrganizationApiKey } from "../src/modules/apiKeys/service.js";
-import { createTestOrganization, createTestUser, grantTestApplicationAccess } from "./helpers.js";
+import { createTestOrganization, createTestUser, grantTestApplicationAccess, confirmTestPayment } from "./helpers.js";
 
 /**
  * UL Console MVP — platform commercial READ APIs, over HTTP against the disposable test database
@@ -139,7 +139,7 @@ before(async () => {
   const acc = await call("POST", `/proposals/${created.data.id}/acceptance`, owner.token, { versionId: created.data.versions[0].id, optionId, contentSha256: sent.data.contentSha256, signerName: "Signatário", consent: true }, { "idempotency-key": `k-${randomUUID()}` });
   assert.equal(acc.status, 201, acc.raw);
   const contractId = acc.data.contract.id as string;
-  assert.equal((await call("POST", `/platform/contracts/${contractId}/activation`, admin.token)).status, 201);
+  assert.equal((await (await confirmTestPayment(contractId, admin.user.id), call("POST", `/platform/contracts/${contractId}/activation`, admin.token))).status, 201);
   const [pr] = await db.select().from(credentialProvisioningRequests).where(eq(credentialProvisioningRequests.organizationId, org.id));
   const issued = await call("POST", `/service/credential-provisionings/${pr!.id}/issue`, provisioner, { expectedIssueCount: 0 });
   assert.equal(issued.status, 201, issued.raw);

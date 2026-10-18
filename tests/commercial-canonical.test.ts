@@ -49,6 +49,7 @@ test("version snapshot: same content in a different row order gives the same has
           lineTotalMinor: total,
           billingPeriod: "one_time" as const,
           durationMonths: null,
+          durationDays: null,
           entitlementSpec: null,
           createdAt: new Date(0),
           updatedAt: new Date(0),

@@ -144,14 +144,14 @@ after(async () => {
   await queryClient.end();
 });
 
-test("permissions: 5 commercial platform permissions granted to PLATFORM_ADMIN, org commercial.read unassigned, no invoice/payment permissions", async () => {
-  const keys = ["platform.commercial.read", "platform.proposal.manage", "platform.proposal.send", "platform.contract.manage", "platform.entitlement.grant"];
+test("permissions: 6 commercial platform permissions granted to PLATFORM_ADMIN (incl. platform.payment.confirm, migration 0023), org commercial.read unassigned, no invoice permission", async () => {
+  const keys = ["platform.commercial.read", "platform.proposal.manage", "platform.proposal.send", "platform.contract.manage", "platform.entitlement.grant", "platform.payment.confirm"];
   for (const key of keys) assert.ok(PLATFORM_PERMISSIONS.some((p) => p.key === key), `${key} missing from seed data`);
   const granted = await queryClient`
     select p.key from platform_role_permissions rp join platform_roles r on r.id = rp.platform_role_id join platform_permissions p on p.id = rp.platform_permission_id
     where r.key = 'PLATFORM_ADMIN' and p.key = any(${keys})`;
-  assert.equal(granted.length, 5);
-  assert.equal((await queryClient`select 1 from platform_permissions where key in ('platform.invoice.manage', 'platform.payment.confirm')`).length, 0);
+  assert.equal(granted.length, 6);
+  assert.equal((await queryClient`select 1 from platform_permissions where key in ('platform.invoice.manage')`).length, 0, "UL Platform issues no invoices");
   assert.ok(PERMISSIONS.some((p) => p.key === "commercial.read"));
   const [perm] = await queryClient`select id from permissions where key = 'commercial.read'`;
   assert.ok(perm, "commercial.read must exist");
