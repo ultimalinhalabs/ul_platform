@@ -236,6 +236,8 @@ export const PLATFORM_PERMISSIONS = [
   { key: "platform.payment.confirm", description: "Record a manual payment confirmation for a contract (with evidence; audited)." },
   // Migration 0027 — the PDF proofs clients upload.
   { key: "platform.payment_proof.read", description: "Open the payment proofs (PDF) clients uploaded for their contracts." },
+  // Migration 0030 — approving commercial terms from the UL Console (owner decision 2026-10-18).
+  { key: "platform.terms.approve", description: "Approve a draft commercial terms text (exact text by SHA-256; audited; irreversible)." },
 ] as const;
 
 export const PLATFORM_ROLE_PERMISSIONS: Record<(typeof PLATFORM_ROLES)[number]["key"], string[]> = {

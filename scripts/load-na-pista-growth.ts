@@ -19,6 +19,7 @@
  *
  * The acceptance consent statement is code (src/modules/commercial/consent.ts, np-tos-* family), not data.
  */
+import { draftMarkers } from "../src/modules/commercial/terms.service.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -41,21 +42,7 @@ export const FORBIDDEN_ENTITLEMENTS = ["advanced_reports.enabled"];
 export const COMMERCIAL = { purchaseMode: "self_service" as const, priceMinor: 2_500_000n, currency: "AOA", periodDays: 30 };
 
 /** Draft markers and placeholders that must be gone before a legal approval. Pure, unit-tested. */
-export function draftMarkers(body: string): string[] {
-  const found: string[] = [];
-  const checks: [string, RegExp][] = [
-    ["RASCUNHO", /RASCUNHO/i],
-    ["placeholder […]", /\[[^\]]{1,80}\]/],
-    ["a completar", /a completar/i],
-    ["a preencher", /a preencher/i],
-    ["serão definid(a)s", /ser[ãa]o definid[ao]s/i],
-    ["devem ser definidos", /devem ser definid[ao]s/i],
-    ["serão validadas", /ser[ãa]o validad[ao]s/i],
-    ["sujeitos a confirmação", /sujeit[ao]s a confirma[çc][ãa]o/i],
-  ];
-  for (const [label, re] of checks) if (re.test(body)) found.push(label);
-  return found;
-}
+export { draftMarkers };
 
 export function termsBody(): string {
   // Final text (2026-10-18): the owner-approved legal answers applied to Annex A + B, plus the support annex C.
