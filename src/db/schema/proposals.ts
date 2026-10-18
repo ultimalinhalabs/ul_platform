@@ -50,6 +50,12 @@ export const proposals = pgTable(
     status: text("status", { enum: PROPOSAL_STATUSES }).notNull().default("draft"),
     prospectCompanyName: text("prospect_company_name").notNull(),
     prospectTaxId: text("prospect_tax_id"),
+    /**
+     * Migration 0029 (legal answer 2.1, 2026-10-18): the client's registered address — mandatory, with the NIF, for a
+     * proposal to be sent/contracted — and optional identification details (licence/alvará, manager id, bank details).
+     */
+    prospectAddress: text("prospect_address"),
+    prospectDetails: jsonb("prospect_details"),
     recipientName: text("recipient_name").notNull(),
     recipientEmail: text("recipient_email").notNull(),
     organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "restrict" }),

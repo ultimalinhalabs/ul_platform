@@ -105,7 +105,7 @@ async function pendingContract() {
   const org = await createTestOrganization("ren-org", owner.user.id);
   const [ownerRole] = await db.select().from(roles).where(eq(roles.key, "OWNER"));
   await db.insert(memberships).values({ userId: owner.user.id, organizationId: org.id, roleId: ownerRole!.id, status: "active" });
-  const created = await call("POST", "/platform/proposals", admin.token, { prospectCompanyName: "Cliente", recipientName: "Dest", recipientEmail: owner.user.email, organizationId: org.id, validUntil: future(), termsTemplateId: termsId });
+  const created = await call("POST", "/platform/proposals", admin.token, { prospectTaxId: "5000000000", prospectAddress: "Luanda, Rua de Teste 1", prospectCompanyName: "Cliente", recipientName: "Dest", recipientEmail: owner.user.email, organizationId: org.id, validUntil: future(), termsTemplateId: termsId });
   assert.equal(created.status, 201, created.raw);
   const proposalId = created.data.id as string;
   const versionId = created.data.versions[0].id as string;
@@ -633,7 +633,7 @@ test("PLATFORM_FINANCE holds exactly: read contracts, open proofs, confirm payme
   for (const [method, path, body] of [
     ["POST", `/platform/contracts/${other.contractId}/activation`, undefined],
     ["POST", `/platform/contracts/${other.contractId}/cancellation`, undefined],
-    ["POST", "/platform/proposals", { prospectCompanyName: "X", recipientName: "Y", recipientEmail: "y@example.com", validUntil: future(), termsTemplateId: termsId }],
+    ["POST", "/platform/proposals", { prospectTaxId: "5000000000", prospectAddress: "Luanda, Rua de Teste 1", prospectCompanyName: "X", recipientName: "Y", recipientEmail: "y@example.com", validUntil: future(), termsTemplateId: termsId }],
     ["GET", "/platform/admins", undefined],
     ["POST", "/platform/credentials", { applicationKey: "NA_PISTA", scopes: [] }],
     ["PATCH", `/platform/organizations/${other.orgId}/status`, { status: "suspended" }],
@@ -642,4 +642,52 @@ test("PLATFORM_FINANCE holds exactly: read contracts, open proofs, confirm payme
     const r = await call(method, path, finance.token, body);
     assert.equal(r.status, 403, `${method} ${path} → ${r.status} ${r.code}`);
   }
+});
+
+// ============================================================================ legal answers 2.1 / 3.2 / 5.3 (2026-10-18)
+
+test("2.1 — a proposal without the client's NIF and registered address cannot be sent (409 CLIENT_LEGAL_DATA_REQUIRED)", async () => {
+  const owner = await person("nolegal");
+  const created = await call("POST", "/platform/proposals", admin.token, { prospectCompanyName: "Sem NIF", recipientName: "Dest", recipientEmail: owner.user.email, validUntil: future(), termsTemplateId: termsId });
+  assert.equal(created.status, 201, created.raw);
+  const v = `/platform/proposals/${created.data.id}/versions/${created.data.versions[0].id}`;
+  const optionId = (await call("POST", `${v}/options`, admin.token, { name: "Opção", isRecommended: true })).data.options[0].id as string;
+  await call("POST", `${v}/options/${optionId}/items`, admin.token, NA);
+  const sent = await call("POST", `${v}/send`, admin.token);
+  assert.equal(sent.status, 409);
+  assert.equal(sent.code, "CLIENT_LEGAL_DATA_REQUIRED");
+  const patched = await call("PATCH", `/platform/proposals/${created.data.id}`, admin.token, { prospectTaxId: "5000000001", prospectAddress: "Luanda, Maianga", prospectDetails: { licenseNumber: "ALV-1", managerIdNumber: null, bankDetails: null } });
+  assert.equal(patched.status, 200, patched.raw);
+  const ok = await call("POST", `${v}/send`, admin.token);
+  assert.equal(ok.status, 200, ok.raw);
+});
+
+test("2.1 / 3.2 — the contract records the client's NIF, address and optional details, and the signer is emailed a copy with the full terms", async () => {
+  const c = await pendingContract();
+  const detail = await call("GET", contractPath(c), c.owner.token);
+  assert.equal(detail.data.snapshot.parties.client.taxId, "5000000000");
+  assert.equal(detail.data.snapshot.parties.client.address, "Luanda, Rua de Teste 1");
+  const [copy] = await outboxFor("commercial.contract.copy", c.owner.user.email);
+  assert.ok(copy, "copy queued in the acceptance transaction");
+  assert.match(copy!.subject, /^Cópia do contrato UL-C-/);
+  assert.match(copy!.bodyText, /NIF 5000000000/);
+  assert.match(copy!.bodyText, /IVA incluído/);
+  assert.match(copy!.bodyText, /Termos de TESTE/, "the full terms text is in the copy");
+});
+
+test("5.3 — 7 days before the end, owners of a contract WITHOUT renewal authorization get one email alert per period", async () => {
+  const { sendExpiryNotices } = await import("../src/modules/commercial/renewals.service.js");
+  const c = await activeContract();
+  await endsIn(c.contractId, 3);
+  await sendExpiryNotices();
+  await sendExpiryNotices();
+  const notices = (await outboxFor("commercial.contract.expiry_notice", c.owner.user.email)).filter((m) => m.dedupeKey.includes(c.contractId));
+  assert.equal(notices.length, 1, "deduplicated per contract period");
+  assert.match(notices[0]!.bodyText, /Não há renovação autorizada/);
+  // With a standing authorization there is no expiry alert (the renewal email is sent instead).
+  const d = await activeContract();
+  await authorize(d);
+  await endsIn(d.contractId, 3);
+  await sendExpiryNotices();
+  assert.equal((await outboxFor("commercial.contract.expiry_notice", d.owner.user.email)).filter((m) => m.dedupeKey.includes(d.contractId)).length, 0);
 });

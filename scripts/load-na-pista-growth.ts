@@ -7,7 +7,7 @@
  *   … --approve-terms --approved-by=<platform admin user id>      # marks the terms `approved` (see below)
  *
  * What it loads (and nothing else):
- *  - Terms `np-tos-001` v1 = docs/commercial/terms/np-tos-001-draft.md (Annex A + Annex B of the pilot specification),
+ *  - Terms `np-tos-001` v1 = docs/commercial/terms/np-tos-001.md (final Annex A + B + C; the draft is kept for history),
  *    as `draft` unless --approve-terms. Approval REFUSES while the text still carries draft markers or placeholders
  *    ("RASCUNHO", "[…]", "a completar", "serão definidas", …): the spec itself says to keep the terms in draft until
  *    explicit legal approval. An approved text is immutable (DB trigger); a different approved text needs version 2.
@@ -58,7 +58,8 @@ export function draftMarkers(body: string): string[] {
 }
 
 export function termsBody(): string {
-  const raw = readFileSync(path.join(process.cwd(), "docs/commercial/terms/np-tos-001-draft.md"), "utf8");
+  // Final text (2026-10-18): the owner-approved legal answers applied to Annex A + B, plus the support annex C.
+  const raw = readFileSync(path.join(process.cwd(), "docs/commercial/terms/np-tos-001.md"), "utf8");
   return raw.replace(/^<!--[\s\S]*?-->\s*/, "").replace(/\r\n/g, "\n").trim() + "\n";
 }
 

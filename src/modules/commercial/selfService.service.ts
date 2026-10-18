@@ -37,7 +37,22 @@ export const configurePlanCommercialSchema = z
   })
   .strict();
 
-export const startSelfServiceSchema = z.object({ applicationKey: PLAN_KEY, planKey: PLAN_KEY }).strict();
+/**
+ * Legal answer 2.1 (2026-10-18): who contracts must identify the client — NIF and registered address mandatory, legal
+ * name defaulting to the organization's name; licence (alvará), manager id and bank details optional.
+ */
+export const selfServiceClientSchema = z
+  .object({
+    legalName: z.string().trim().min(2).max(200).optional(),
+    taxId: z.string().trim().min(5).max(50),
+    address: z.string().trim().min(5).max(300),
+    licenseNumber: z.string().trim().max(100).optional(),
+    managerIdNumber: z.string().trim().max(50).optional(),
+    bankDetails: z.string().trim().max(200).optional(),
+  })
+  .strict();
+
+export const startSelfServiceSchema = z.object({ applicationKey: PLAN_KEY, planKey: PLAN_KEY, client: selfServiceClientSchema }).strict();
 
 type PlanRow = typeof plans.$inferSelect;
 
@@ -187,6 +202,15 @@ export async function startSelfServiceContracting(
       userId: actor.userId,
       recipientEmail: user.email!.trim().toLowerCase(),
       organization: org!,
+      client: {
+        legalName: input.client.legalName ?? org!.name,
+        taxId: input.client.taxId,
+        address: input.client.address,
+        details:
+          input.client.licenseNumber || input.client.managerIdNumber || input.client.bankDetails
+            ? { licenseNumber: input.client.licenseNumber ?? null, managerIdNumber: input.client.managerIdNumber ?? null, bankDetails: input.client.bankDetails ?? null }
+            : null,
+      },
       application: { id: application.id, key: application.key, name: application.name },
       plan: { id: plan.id, key: plan.key, name: plan.name, priceMinor: plan.priceMinor!, currency: plan.currency!, periodDays: plan.periodDays! },
       terms: { id: terms.id, key: terms.key, version: terms.version, title: terms.title, body: terms.body, bodySha256: terms.bodySha256 },

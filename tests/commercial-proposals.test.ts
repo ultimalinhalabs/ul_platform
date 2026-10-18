@@ -99,7 +99,7 @@ let termsId: string;
 /** A proposal with one draft version, one recommended option and one application_plan item; ready to send. */
 async function readyProposal(overrides: Record<string, unknown> = {}) {
   const created = await call("POST", "/platform/proposals", admin.token, {
-    prospectCompanyName: "Empresa de Teste",
+    prospectTaxId: "5000000000", prospectAddress: "Luanda, Rua de Teste 1", prospectCompanyName: "Empresa de Teste",
     recipientName: "Destinatário Teste",
     recipientEmail: `b1b+${randomUUID()}@test.ul-platform.invalid`,
     organizationId: activeOrgId,
@@ -191,7 +191,7 @@ test("1. a PLATFORM_ADMIN creates a proposal: UL-P number, draft status, v1 draf
 
 // 2, 19 ------------------------------------------------------------------------------------------
 test("2/19. without the platform permission: org OWNER 403, read-only platform role 403 on manage/send, service key 403, anonymous 401", async () => {
-  const body = { prospectCompanyName: "X", recipientName: "Y", recipientEmail: "y@test.ul-platform.invalid" };
+  const body = { prospectTaxId: "5000000000", prospectAddress: "Luanda, Rua de Teste 1", prospectCompanyName: "X", recipientName: "Y", recipientEmail: "y@test.ul-platform.invalid" };
   assert.equal((await call("POST", "/platform/proposals", ownerToken, body)).status, 403);
   assert.equal((await call("GET", "/platform/proposals", ownerToken)).status, 403);
   assert.equal((await call("POST", "/platform/proposals", readOnly.token, body)).status, 403);
@@ -209,7 +209,7 @@ test("2/19. without the platform permission: org OWNER 403, read-only platform r
 
 // 3 ----------------------------------------------------------------------------------------------
 test("3. organizationId is verified server-side: unknown 404, suspended 409, never accepted blindly", async () => {
-  const base = { prospectCompanyName: "X", recipientName: "Y", recipientEmail: "y@test.ul-platform.invalid" };
+  const base = { prospectTaxId: "5000000000", prospectAddress: "Luanda, Rua de Teste 1", prospectCompanyName: "X", recipientName: "Y", recipientEmail: "y@test.ul-platform.invalid" };
   assert.equal((await call("POST", "/platform/proposals", admin.token, { ...base, organizationId: randomUUID() })).status, 404);
   const suspended = await call("POST", "/platform/proposals", admin.token, { ...base, organizationId: suspendedOrgId });
   assert.equal(suspended.status, 409);
@@ -275,7 +275,7 @@ test("12/14/15/16/17/34. send preconditions: totals, terms present and approved,
   const draftTerms = await readyProposal({ termsTemplateId: await approvedTerms(admin.user.id, "draft") });
   assert.equal((await call("POST", sendPath(draftTerms), admin.token)).status, 409);
 
-  const created = await call("POST", "/platform/proposals", admin.token, { prospectCompanyName: "X", recipientName: "Y", recipientEmail: "y@test.ul-platform.invalid", validUntil: future(), termsTemplateId: termsId });
+  const created = await call("POST", "/platform/proposals", admin.token, { prospectTaxId: "5000000000", prospectAddress: "Luanda, Rua de Teste 1", prospectCompanyName: "X", recipientName: "Y", recipientEmail: "y@test.ul-platform.invalid", validUntil: future(), termsTemplateId: termsId });
   const noOption = { proposalId: created.data.id, versionId: created.data.versions[0].id };
   assert.equal((await call("POST", sendPath(noOption), admin.token)).status, 409);
 
@@ -302,7 +302,7 @@ test("12/14/15/16/17/34. send preconditions: totals, terms present and approved,
 
 test("34. a failing create rolls back entirely (no proposal row, no event)", async () => {
   const email = `b1b-rollback+${randomUUID()}@test.ul-platform.invalid`;
-  const res = await call("POST", "/platform/proposals", admin.token, { prospectCompanyName: "X", recipientName: "Y", recipientEmail: email, termsTemplateId: randomUUID() });
+  const res = await call("POST", "/platform/proposals", admin.token, { prospectTaxId: "5000000000", prospectAddress: "Luanda, Rua de Teste 1", prospectCompanyName: "X", recipientName: "Y", recipientEmail: email, termsTemplateId: randomUUID() });
   assert.equal(res.status, 404);
   assert.equal((await db.select().from(proposals).where(eq(proposals.recipientEmail, email))).length, 0);
 });
