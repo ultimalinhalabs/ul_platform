@@ -7,6 +7,7 @@ import {
   contracts,
   contractVersions,
   entitlementGrants,
+  grantEntitlementValues,
   organizationApplicationAccess,
   organizations,
   planEntitlements,
@@ -323,10 +324,13 @@ export async function activateContract(contractId: string, activationActor: Acti
           status: "planned",
         })
         .returning();
+      // Migration 0031 — freeze the plan values this contract grants: a later plan edit never changes them.
+      const frozen = await tx.select({ key: planEntitlements.key, value: planEntitlements.value }).from(planEntitlements).where(eq(planEntitlements.planId, plan.id));
+      if (frozen.length) await tx.insert(grantEntitlementValues).values(frozen.map((v) => ({ grantId: grant!.id, key: v.key, value: v.value, source: "plan" as const })));
       await recordCommercialEvent(tx, { ...base, aggregateType: "entitlement_grant", aggregateId: grant!.id, eventType: "entitlement.planned", payload: { contractId: contract.id, contractItemId: item.id, applicationKey: application.key, planKey: plan.key } });
 
       const subscription = await createSubscription(
-        { organizationId: contract.organizationId, applicationKey: application.key, planKey: plan.key, actorUserId: who.actorUserId, currentPeriodStart: startsAt, currentPeriodEnd: endsAt },
+        { organizationId: contract.organizationId, applicationKey: application.key, planKey: plan.key, actorUserId: who.actorUserId, currentPeriodStart: startsAt, currentPeriodEnd: endsAt, origin: "commercial" },
         tx,
       );
       const access = await grantApplicationAccess({ organizationId: contract.organizationId, applicationKey: application.key, actorUserId: who.actorUserId }, tx);

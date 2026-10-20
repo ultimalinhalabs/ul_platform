@@ -14,16 +14,20 @@
  *  - Plan NA_PISTA / NA_PISTA_GROWTH "Na Pista Crescimento", ACTIVE.
  *  - Its entitlements: catalog.enabled = true, products.max = 500, members.max = 5. NOT advanced_reports.enabled (the
  *    pilot is sold without advanced reports — owner decision 2026-10-15); the script refuses if that key is present.
+ *    Migration 0031: plus the per-module keys orders/customers/services.enabled = true — exactly the modules clause A2
+ *    of the approved terms lists, which `catalog.enabled` alone unlocked until now. Validated against the typed
+ *    definitions (refuses if the seed has not loaded them); every change lands in plan_entitlement_history.
  *  - Commercial configuration: self_service, 2 500 000 minor (25 000,00 AOA), 30 days, terms np-tos-001.
  *    While the terms are a draft, the catalog lists the plan as NOT contractable (no one can buy it yet).
  *
  * The acceptance consent statement is code (src/modules/commercial/consent.ts, np-tos-* family), not data.
  */
 import { draftMarkers } from "../src/modules/commercial/terms.service.js";
+import { loadDefinitions, validatePlanEntitlements } from "../src/modules/entitlements/definitions.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { db, queryClient } from "../src/db/index.js";
 import { applications, commercialTermsTemplates, planEntitlements, plans, platformMemberships, platformRoles } from "../src/db/schema/index.js";
 
@@ -37,7 +41,14 @@ export const TERMS_KEY = "np-tos-001";
 export const TERMS_VERSION = 1;
 export const TERMS_TITLE = "Termos Padrão de Subscrição — Na Pista (piloto Na Pista Crescimento)";
 export const PLAN = { applicationKey: "NA_PISTA", key: "NA_PISTA_GROWTH", name: "Na Pista Crescimento", description: "Plano piloto: catálogo, stock, pedidos, clientes, serviços e marcações; até 500 produtos ativos e 5 utilizadores." };
-export const ENTITLEMENTS: Record<string, unknown> = { "catalog.enabled": true, "products.max": 500, "members.max": 5 };
+export const ENTITLEMENTS: Record<string, unknown> = {
+  "catalog.enabled": true,
+  "products.max": 500,
+  "members.max": 5,
+  "orders.enabled": true,
+  "customers.enabled": true,
+  "services.enabled": true,
+};
 export const FORBIDDEN_ENTITLEMENTS = ["advanced_reports.enabled"];
 export const COMMERCIAL = { purchaseMode: "self_service" as const, priceMinor: 2_500_000n, currency: "AOA", periodDays: 30 };
 
@@ -114,7 +125,13 @@ async function main() {
       changes.push(`plan ${PLAN.key} name/description/status updated`);
     }
 
-    // 3. Entitlements (exactly these; the forbidden ones must not exist)
+    // 3. Entitlements (exactly these; the forbidden ones must not exist), validated against the typed definitions
+    await tx.execute(sql`select set_config('ul.actor', 'script:load-na-pista-growth', true)`);
+    const check = validatePlanEntitlements(
+      Object.entries(ENTITLEMENTS).map(([key, value]) => ({ key, value })),
+      await loadDefinitions(tx, PLAN.applicationKey),
+    );
+    if (check.errors.length) throw new Error(`plan ${PLAN.key} does not match the entitlement definitions (run the seed first?): ${check.errors.join("; ")}`);
     const existing = await tx.select().from(planEntitlements).where(eq(planEntitlements.planId, plan!.id));
     const forbidden = existing.filter((e) => FORBIDDEN_ENTITLEMENTS.includes(e.key));
     if (forbidden.length) throw new Error(`plan ${PLAN.key} has ${forbidden.map((f) => f.key).join(", ")} — not part of the approved pilot; remove it deliberately first`);

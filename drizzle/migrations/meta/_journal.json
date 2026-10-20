@@ -218,6 +218,13 @@
       "when": 1792329114279,
       "tag": "0030_terms_approval_permission",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1792510027187,
+      "tag": "0031_entitlement_definitions",
+      "breakpoints": true
     }
   ]
 }

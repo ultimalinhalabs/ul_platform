@@ -30,7 +30,7 @@ test("resolves the granting subscription's plan entitlements", async () => {
     assert.equal(resolved.subscription?.planKey, "BUSINESS");
     assert.deepEqual(
       resolved.entitlements.map((e) => e.key).sort(),
-      ["advanced_reports.enabled", "catalog.enabled", "products.max"],
+      ["advanced_reports.enabled", "catalog.enabled", "customers.enabled", "orders.enabled", "products.max", "services.enabled"],
     );
 
     const single = await getEffectiveEntitlement(org.id, "NA_PISTA", "products.max");

@@ -1,6 +1,6 @@
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { applications, organizations, plans, subscriptions } from "../../db/schema/index.js";
+import { applications, organizations, plans, SUBSCRIPTION_ORIGINS, subscriptions } from "../../db/schema/index.js";
 import { recordAuditEvent } from "../audit/service.js";
 import { SUBSCRIPTION_EFFECTIVE } from "../entitlements/effectiveness.js";
 import { ConflictError, NotFoundError } from "../../shared/errors.js";
@@ -98,6 +98,8 @@ export async function createSubscription(
     /** Block 1D — contractual subscriptions carry the grant's period; omitted, the period starts now with no fixed end (as before). */
     currentPeriodStart?: Date;
     currentPeriodEnd?: Date | null;
+    /** Migration 0031 — contract activation records `commercial`; other callers leave it unclassified (NULL). */
+    origin?: (typeof SUBSCRIPTION_ORIGINS)[number];
   },
   /** Block 1D — the caller's transaction (contract activation); omitted, it opens its own exactly as before. */
   executor?: Tx,
@@ -159,6 +161,7 @@ async function insertSubscription(
       status: "active",
       currentPeriodStart: input.currentPeriodStart ?? new Date(),
       currentPeriodEnd: input.currentPeriodEnd ?? null,
+      origin: input.origin ?? null,
     })
     .returning();
   if (!subscription) throw new Error("Failed to create subscription");

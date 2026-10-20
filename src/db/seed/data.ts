@@ -271,6 +271,29 @@ export const PLANS = [
 ] as const;
 
 /**
+ * Migration 0031 — the typed catalog every plan value is validated against (src/modules/entitlements/definitions.ts).
+ * Keys are unique per application, never global. `members.max` keeps today's behaviour (absent = no limit, applied
+ * by UL to the whole organization as the max across effective plans) declared explicitly until its scope is decided
+ * (audit §9.3/§12.8). Storefront keys are defined but in no plan: selling them is a commercial decision.
+ */
+export const ENTITLEMENT_DEFINITIONS = [
+  { applicationKey: "NA_PISTA", key: "catalog.enabled", valueType: "boolean", module: "catalog", requires: [], absentPolicy: "deny", status: "active", description: "Catálogo: produtos, categorias e stock." },
+  { applicationKey: "NA_PISTA", key: "products.max", valueType: "limit", module: "catalog", requires: ["catalog.enabled"], absentPolicy: "deny", status: "active", description: "Máximo de produtos activos por organização." },
+  { applicationKey: "NA_PISTA", key: "orders.enabled", valueType: "boolean", module: "orders", requires: ["catalog.enabled"], absentPolicy: "deny", status: "active", description: "Registo e acompanhamento de pedidos (os itens referenciam produtos do catálogo)." },
+  { applicationKey: "NA_PISTA", key: "customers.enabled", valueType: "boolean", module: "customers", requires: [], absentPolicy: "deny", status: "active", description: "Gestão de clientes." },
+  { applicationKey: "NA_PISTA", key: "services.enabled", valueType: "boolean", module: "services", requires: ["customers.enabled"], absentPolicy: "deny", status: "active", description: "Serviços, profissionais, horários e marcações (cada marcação pertence a um cliente)." },
+  { applicationKey: "NA_PISTA", key: "members.max", valueType: "limit", module: null, requires: [], absentPolicy: "unlimited", status: "active", description: "Máximo de membros (activos + convidados) da organização. Âmbito por decidir." },
+  { applicationKey: "NA_PISTA", key: "advanced_reports.enabled", valueType: "boolean", module: "reports", requires: [], absentPolicy: "deny", status: "deprecated", description: "Sem consumidor: a Na Pista não tem módulo de relatórios avançados." },
+  { applicationKey: "NA_PISTA", key: "storefront.enabled", valueType: "boolean", module: "storefront", requires: ["catalog.enabled"], absentPolicy: "deny", status: "active", description: "Publicação de uma loja pública alimentada pelo catálogo." },
+  { applicationKey: "NA_PISTA", key: "storefront.checkout.enabled", valueType: "boolean", module: "storefront", requires: ["storefront.enabled", "orders.enabled"], absentPolicy: "deny", status: "active", description: "Receber encomendas pela loja pública (sem pagamento online)." },
+  { applicationKey: "MICHA_EXPRESS", key: "transactions.max", valueType: "limit", module: null, requires: [], absentPolicy: "deny", status: "active", description: "Máximo de transacções por período." },
+  { applicationKey: "MICHA_EXPRESS", key: "priority_support.enabled", valueType: "boolean", module: null, requires: [], absentPolicy: "deny", status: "active", description: "Suporte prioritário." },
+  { applicationKey: "FOI", key: "deliveries.max", valueType: "limit", module: null, requires: [], absentPolicy: "deny", status: "active", description: "Máximo de entregas por período." },
+  { applicationKey: "QUALE_A_DICA", key: "conversations.max", valueType: "limit", module: null, requires: [], absentPolicy: "deny", status: "active", description: "Máximo de conversas por período." },
+  { applicationKey: "HOJE_TEM", key: "members.max", valueType: "limit", module: null, requires: [], absentPolicy: "unlimited", status: "active", description: "Máximo de membros da organização. Âmbito por decidir." },
+] as const;
+
+/**
  * Mixed value types (boolean, integer) deliberately, to prove the jsonb
  * `value` column represents both without a separate type column. Keys
  * are generic commercial concepts (`*.max`, `*.enabled`), not product
@@ -280,8 +303,16 @@ export const PLANS = [
 export const PLAN_ENTITLEMENTS = [
   { applicationKey: "NA_PISTA", planKey: "STARTER", key: "catalog.enabled", value: true },
   { applicationKey: "NA_PISTA", planKey: "STARTER", key: "products.max", value: 100 },
+  // Migration 0031 (audit 2026-10-20) — the per-module keys are loaded `true` wherever `catalog.enabled` unlocked
+  // every module until now, so no existing plan gains or loses anything.
+  { applicationKey: "NA_PISTA", planKey: "STARTER", key: "orders.enabled", value: true },
+  { applicationKey: "NA_PISTA", planKey: "STARTER", key: "customers.enabled", value: true },
+  { applicationKey: "NA_PISTA", planKey: "STARTER", key: "services.enabled", value: true },
   { applicationKey: "NA_PISTA", planKey: "BUSINESS", key: "catalog.enabled", value: true },
   { applicationKey: "NA_PISTA", planKey: "BUSINESS", key: "products.max", value: 1000 },
+  { applicationKey: "NA_PISTA", planKey: "BUSINESS", key: "orders.enabled", value: true },
+  { applicationKey: "NA_PISTA", planKey: "BUSINESS", key: "customers.enabled", value: true },
+  { applicationKey: "NA_PISTA", planKey: "BUSINESS", key: "services.enabled", value: true },
   { applicationKey: "NA_PISTA", planKey: "BUSINESS", key: "advanced_reports.enabled", value: true },
   { applicationKey: "MICHA_EXPRESS", planKey: "BASIC", key: "transactions.max", value: 1000 },
   { applicationKey: "MICHA_EXPRESS", planKey: "BUSINESS", key: "transactions.max", value: 100000 },

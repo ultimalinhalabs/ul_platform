@@ -14,7 +14,8 @@ after(async () => {
 test("the loader carries exactly the approved pilot values", () => {
   assert.equal(PLAN.key, "NA_PISTA_GROWTH");
   assert.equal(PLAN.name, "Na Pista Crescimento");
-  assert.deepEqual(ENTITLEMENTS, { "catalog.enabled": true, "products.max": 500, "members.max": 5 });
+  // Migration 0031: the per-module keys are exactly the modules clause A2 of the approved terms lists.
+  assert.deepEqual(ENTITLEMENTS, { "catalog.enabled": true, "products.max": 500, "members.max": 5, "orders.enabled": true, "customers.enabled": true, "services.enabled": true });
   assert.ok(FORBIDDEN_ENTITLEMENTS.includes("advanced_reports.enabled"), "sold without advanced reports");
   assert.equal(COMMERCIAL.priceMinor, 2_500_000n);
   assert.equal(COMMERCIAL.currency, "AOA");

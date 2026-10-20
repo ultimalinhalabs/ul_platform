@@ -9,6 +9,11 @@ import { plans } from "./plans.js";
  * what a specific Organization actually has, via a Subscription; not
  * built yet). Do not confuse the two.
  *
+ * Superseded by migration 0031 (audit 2026-10-20): keys now have a typed, per-application catalog
+ * (`entitlement_definitions`, see entitlementDefinitions.ts) that the seed and loaders validate against,
+ * and every change to this table is recorded in `plan_entitlement_history`. The original reasoning below
+ * still holds for why that catalog is per application and carries no product semantics:
+ *
  * Deliberately no separate "entitlement catalog" table: unlike
  * `permissions`, entitlement keys are not a fixed platform vocabulary —
  * products define their own capability keys (see CLAUDE.md §10-11), so a
