@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { pathToFileURL } from "node:url";
 import { db } from "../index.js";
 import { validateEndpointUrl } from "../../modules/endpoints/validation.js";
+import { validatePlanEntitlements } from "../../modules/entitlements/definitions.js";
 import {
   applicationEndpoints,
   applicationRoles,
@@ -10,6 +11,7 @@ import {
   applicationMeters,
   applicationServiceScopes,
   applications,
+  entitlementDefinitions,
   meters,
   permissions,
   planEntitlements,
@@ -29,6 +31,7 @@ import {
   APPLICATION_METERS,
   APPLICATION_SERVICE_SCOPES,
   APPLICATIONS,
+  ENTITLEMENT_DEFINITIONS,
   METERS,
   PERMISSIONS,
   PLAN_ENTITLEMENTS,
@@ -155,6 +158,40 @@ export async function seed() {
       .returning({ id: plans.id, applicationId: plans.applicationId, key: plans.key });
 
     const planIdByAppIdAndKey = new Map(planRows.map((p) => [`${p.applicationId}:${p.key}`, p.id]));
+
+    // Migration 0031 — typed definitions first; every seeded plan is validated against them before anything is written.
+    await tx.execute(sql`select set_config('ul.actor', 'seed', true)`);
+    const definitionRows = await tx
+      .insert(entitlementDefinitions)
+      .values(
+        ENTITLEMENT_DEFINITIONS.map((d) => {
+          const applicationId = appIdByKey.get(d.applicationKey);
+          if (!applicationId) {
+            throw new Error(`Seed error: application "${d.applicationKey}" was not upserted`);
+          }
+          return { applicationId, key: d.key, valueType: d.valueType, module: d.module, requires: [...d.requires], absentPolicy: d.absentPolicy, status: d.status, description: d.description };
+        }),
+      )
+      .onConflictDoUpdate({
+        target: [entitlementDefinitions.applicationId, entitlementDefinitions.key],
+        set: {
+          valueType: sql`excluded.value_type`,
+          module: sql`excluded.module`,
+          requires: sql`excluded.requires`,
+          absentPolicy: sql`excluded.absent_policy`,
+          status: sql`excluded.status`,
+          description: sql`excluded.description`,
+          updatedAt: sql`now()`,
+        },
+      })
+      .returning({ id: entitlementDefinitions.id });
+    for (const p of PLANS) {
+      const entries = PLAN_ENTITLEMENTS.filter((pe) => pe.applicationKey === p.applicationKey && pe.planKey === p.key);
+      const { errors } = validatePlanEntitlements(entries, ENTITLEMENT_DEFINITIONS.filter((d) => d.applicationKey === p.applicationKey));
+      if (errors.length) {
+        throw new Error(`Seed error: plan "${p.applicationKey}/${p.key}" — ${errors.join("; ")}`);
+      }
+    }
 
     const planEntitlementRows = PLAN_ENTITLEMENTS.map((pe) => {
       const applicationId = appIdByKey.get(pe.applicationKey);
@@ -334,6 +371,7 @@ export async function seed() {
       platformRolePermissions: platformRolePermissionRows.length,
       plans: planRows.length,
       planEntitlements: planEntitlementRows.length,
+      entitlementDefinitions: definitionRows.length,
       serviceScopes: serviceScopeRows.length,
       applicationServiceScopes: applicationServiceScopeRows.length,
       meters: meterRows.length,

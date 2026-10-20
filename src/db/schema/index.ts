@@ -36,3 +36,4 @@ export * from "./commercialPayments.js";
 export * from "./organizationInvitations.js";
 export * from "./paymentProofs.js";
 export * from "./emailOutbox.js";
+export * from "./entitlementDefinitions.js";

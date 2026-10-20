@@ -28,7 +28,7 @@ test("getPlanDetail returns the plan's own entitlements, not another plan's", as
 
   const naPistaBusiness = await getPlanDetail("NA_PISTA", "BUSINESS");
   const naPistaKeys = naPistaBusiness.plan.entitlements.map((e) => e.key).sort();
-  assert.deepEqual(naPistaKeys, ["advanced_reports.enabled", "catalog.enabled", "products.max"]);
+  assert.deepEqual(naPistaKeys, ["advanced_reports.enabled", "catalog.enabled", "customers.enabled", "orders.enabled", "products.max", "services.enabled"]);
   assert.equal(naPistaBusiness.plan.entitlements.find((e) => e.key === "products.max")?.value, 1000);
 
   const michaExpressBusiness = await getPlanDetail("MICHA_EXPRESS", "BUSINESS");

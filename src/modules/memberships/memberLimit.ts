@@ -1,8 +1,9 @@
 import { and, count, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import type { db } from "../../db/index.js";
-import { memberships, organizationInvitations, planEntitlements, subscriptions } from "../../db/schema/index.js";
+import { memberships, organizationInvitations, subscriptions } from "../../db/schema/index.js";
 import { AppError } from "../../shared/errors.js";
 import { SUBSCRIPTION_EFFECTIVE } from "../entitlements/effectiveness.js";
+import { valuesForSubscription } from "../entitlements/service.js";
 
 type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -22,6 +23,11 @@ type Executor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
  * one application); with no effective plan setting it there is no limit. A
  * present but invalid value fails closed. A downgrade below the current count
  * removes nobody — only new members are refused.
+ *
+ * Migration 0031: each subscription contributes the value its contract FROZE (a plan edit never changes an
+ * accepted contract), or the live plan value when it has no grant; a subscription whose grant is no longer
+ * effective contributes nothing. "Absent = no limit" is declared explicitly in the `members.max` definitions
+ * until the scope decision (audit §12.8) is taken.
  */
 export const MEMBERS_LIMIT_KEY = "members.max";
 export const COUNTED_MEMBERSHIP_STATUSES = ["active", "invited"] as const;
@@ -33,13 +39,16 @@ export class MemberLimitExceededError extends AppError {
 }
 
 export async function resolveMemberLimit(executor: Executor, organizationId: string): Promise<number | null> {
-  const rows = await executor
-    .select({ value: planEntitlements.value })
+  const effective = await executor
+    .select({ subscriptionId: subscriptions.id, planId: subscriptions.planId })
     .from(subscriptions)
-    .innerJoin(planEntitlements, and(eq(planEntitlements.planId, subscriptions.planId), eq(planEntitlements.key, MEMBERS_LIMIT_KEY)))
     .where(and(eq(subscriptions.organizationId, organizationId), SUBSCRIPTION_EFFECTIVE));
-  if (rows.length === 0) return null;
-  const values = rows.map((r) => r.value);
+  const values: unknown[] = [];
+  for (const sub of effective) {
+    const found = (await valuesForSubscription(executor, sub)).values.find((v) => v.key === MEMBERS_LIMIT_KEY);
+    if (found) values.push(found.value);
+  }
+  if (values.length === 0) return null;
   if (values.some((v) => typeof v !== "number" || !Number.isInteger(v) || v < 0)) {
     throw new MemberLimitExceededError(`The organization's plan has an invalid "${MEMBERS_LIMIT_KEY}"`);
   }
