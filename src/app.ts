@@ -16,6 +16,14 @@ import { v1Router } from "./routes/v1/index.js";
 export const app = express();
 
 app.disable("x-powered-by");
+/**
+ * No browser HTTP caching of API responses: they are per-caller (bearer) data. With Express's default
+ * ETag, Chrome revalidated a `GET /v1/applications` it had cached for UL Client (platform.ultimalinha.ao)
+ * when UL Console (console.ultimalinha.ao, same site → same cache partition) asked for it; Vercel strips
+ * the CORS headers from the resulting 304, so Chrome kept the cached `Access-Control-Allow-Origin` of the
+ * other origin and failed the fetch (status 0) — see tests/http-caching.test.ts. No ETag → no 304.
+ */
+app.set("etag", false);
 app.use(helmet());
 /**
  * Browser clients (UL Console) send `Authorization: Bearer <JWT>` directly —
@@ -40,7 +48,10 @@ app.use(requestId);
 app.use(requestTiming);
 app.use(express.json({ limit: "1mb" }));
 
-app.use("/v1", v1Router);
+app.use("/v1", (_req, res, next) => {
+  res.set("Cache-Control", "no-store");
+  next();
+}, v1Router);
 
 app.use(errorHandler);
 
