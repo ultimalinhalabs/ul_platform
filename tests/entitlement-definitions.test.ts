@@ -32,6 +32,7 @@ import { getEffectiveEntitlements } from "../src/modules/entitlements/service.js
 import { resolveMemberLimit } from "../src/modules/memberships/memberLimit.js";
 import { createSubscription } from "../src/modules/subscriptions/service.js";
 import { backfill, sameEntitlementSet } from "../scripts/backfill-grant-entitlement-values.js";
+import { loadEntitlementDefinitions } from "../scripts/load-entitlement-definitions.js";
 import { classify, parseClassification } from "../scripts/classify-subscriptions.js";
 import { confirmTestPayment, createTestOrganization, createTestUser } from "./helpers.js";
 
@@ -283,6 +284,21 @@ test("frozen values are insert-only, and only for a planned or active grant; pla
 });
 
 // ── Backfill and classification scripts ─────────────────────────────────────────────────────────────────
+
+test("targeted loader (production path, not the full seed): adds only missing per-module keys, dry run writes nothing, idempotent", async () => {
+  const pid = await planId("NA_PISTA", "STARTER");
+  await db.delete(planEntitlements).where(and(eq(planEntitlements.planId, pid), eq(planEntitlements.key, "orders.enabled")));
+  try {
+    const dry = await loadEntitlementDefinitions({ apply: false });
+    assert.deepEqual(dry.changes, ["NA_PISTA/STARTER: orders.enabled = true added"]);
+    assert.equal((await db.select().from(planEntitlements).where(and(eq(planEntitlements.planId, pid), eq(planEntitlements.key, "orders.enabled")))).length, 0, "dry run");
+    assert.ok(dry.warnings.some((w) => w.includes("NA_PISTA/BUSINESS") && w.includes("advanced_reports.enabled")), "deprecated key reported, not removed");
+    assert.deepEqual((await loadEntitlementDefinitions({ apply: true })).changes, ["NA_PISTA/STARTER: orders.enabled = true added"]);
+    assert.deepEqual((await loadEntitlementDefinitions({ apply: true })).changes, []);
+  } finally {
+    await seed();
+  }
+});
 
 test("backfill freezes a pre-0031 grant exactly once (dry run writes nothing); the Growth guard compares the exact approved set", async () => {
   // Reproduce a grant activated before 0031: skip the activation's frozen-value insert for this test only.
