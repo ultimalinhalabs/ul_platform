@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { assertLocalOnlyTargets } from "./localOnlyGuard.js";
+import { closeFixtureDb, createFixtureOrganization, grantFixtureApplicationAccess, subscribeFixture } from "./fixtureSupport.js";
 
 // Dev-only: refuses to run unless every target is local (see localOnlyGuard.ts).
 assertLocalOnlyTargets({ database: true });
@@ -18,8 +19,9 @@ import { SignJWT } from "jose";
  * sanctioned no-real-Supabase-login test pattern), and that secret must
  * never leave this process. Everything after minting a token is a plain
  * HTTP call to this platform's own public API — exactly what any external
- * client (including the real na-pista spike) does. No direct DB writes
- * except the one cleanup step at teardown time, mirroring tests/helpers.ts.
+ * client (including the real na-pista spike) does. Direct DB writes: the test user's local email verification and the
+ * subscription (no longer self-service — see fixtureSupport.ts), plus the
+ * cleanup step at teardown time, mirroring tests/helpers.ts.
  *
  * Output: a local, gitignored JSON file the na-pista spike's test harness
  * reads to get org ids, subscription ids, api key secrets and short-lived
@@ -88,21 +90,21 @@ async function main() {
   await call("GET", "/me", outsiderToken);
 
   // --- Organizations (createOrganization makes the caller OWNER atomically) ---
-  const orgA = await call("POST", "/organizations", ownerAToken, { name: `F19_TEST_ORG_A_${runId}` });
-  const orgB = await call("POST", "/organizations", ownerBToken, { name: `F19_TEST_ORG_B_${runId}` });
-  const orgC = await call("POST", "/organizations", ownerCToken, { name: `F19_TEST_ORG_C_${runId}` });
+  const orgA = await createFixtureOrganization(BASE, ownerAToken, ownerAId, { name: `F19_TEST_ORG_A_${runId}` });
+  const orgB = await createFixtureOrganization(BASE, ownerBToken, ownerBId, { name: `F19_TEST_ORG_B_${runId}` });
+  const orgC = await createFixtureOrganization(BASE, ownerCToken, ownerCId, { name: `F19_TEST_ORG_C_${runId}` });
   // Org D: mirrors org A (also subscribed+entitled) — needed so
   // tenant-isolation tests can prove "two organizations that BOTH have
   // real access are still isolated from each other", independent of the
   // entitlement-gating scenarios org B/C exist for.
-  const orgD = await call("POST", "/organizations", ownerDToken, { name: `F19_TEST_ORG_D_${runId}` });
+  const orgD = await createFixtureOrganization(BASE, ownerDToken, ownerDId, { name: `F19_TEST_ORG_D_${runId}` });
   // Org E: exists ONLY for the entitlements test file's live
   // subscribe->cancel->observe-cache scenario. No other test file may
   // touch org E's subscription — a shared mutable fixture across files
   // would make results depend on file execution order.
   const ownerEId = randomUUID();
   const ownerEToken = await mintUserToken(ownerEId, email("owner-e"));
-  const orgE = await call("POST", "/organizations", ownerEToken, { name: `F19_TEST_ORG_E_${runId}` });
+  const orgE = await createFixtureOrganization(BASE, ownerEToken, ownerEId, { name: `F19_TEST_ORG_E_${runId}` });
 
   // --- Membership: staffA is STAFF in org A only (for permission + cross-tenant tests) ---
   await call("POST", `/organizations/${orgA.id}/memberships`, ownerAToken, {
@@ -112,24 +114,24 @@ async function main() {
 
   // --- Subscriptions ---
   // Org A: active NA_PISTA/BUSINESS subscription -> granting entitlements.
-  const subscriptionA = await call("POST", `/organizations/${orgA.id}/subscriptions`, ownerAToken, {
+  const subscriptionA = await subscribeFixture(orgA.id, {
     applicationKey: "NA_PISTA",
     planKey: "BUSINESS",
   });
   // Org B: deliberately NO subscription -> entitlements must resolve empty.
   // Org C: subscribe then cancel -> "canceled subscription" must behave like "no access".
-  const subscriptionC = await call("POST", `/organizations/${orgC.id}/subscriptions`, ownerCToken, {
+  const subscriptionC = await subscribeFixture(orgC.id, {
     applicationKey: "NA_PISTA",
     planKey: "STARTER",
   });
   await call("PATCH", `/organizations/${orgC.id}/subscriptions/${subscriptionC.id}`, ownerCToken, {
     status: "canceled",
   });
-  const subscriptionD = await call("POST", `/organizations/${orgD.id}/subscriptions`, ownerDToken, {
+  const subscriptionD = await subscribeFixture(orgD.id, {
     applicationKey: "NA_PISTA",
     planKey: "BUSINESS",
   });
-  const subscriptionE = await call("POST", `/organizations/${orgE.id}/subscriptions`, ownerEToken, {
+  const subscriptionE = await subscribeFixture(orgE.id, {
     applicationKey: "NA_PISTA",
     planKey: "BUSINESS",
   });
@@ -160,9 +162,10 @@ async function main() {
   });
   await call("POST", `/organizations/${orgA.id}/api-keys/${toRevokeKeyA.id}/revoke`, ownerAToken);
 
-  // Org B: an API key can be minted even without a subscription (creation
-  // only requires membership + api_key.manage, not entitlement) — this is
+  // Org B: an API key can be minted without a subscription (creation needs
+  // membership + api_key.manage + application access, not entitlement) —
   // exactly the fixture needed for "credential valid, entitlement absent".
+  await grantFixtureApplicationAccess(orgB.id, "NA_PISTA");
   const integrationKeyB = await call("POST", `/organizations/${orgB.id}/api-keys`, ownerBToken, {
     applicationKey: "NA_PISTA",
     scopes: ["catalog.read", "catalog.write", "customer.read"],
@@ -210,7 +213,7 @@ async function main() {
   console.log(`orgA=${orgA.id} orgB=${orgB.id} orgC=${orgC.id} orgD=${orgD.id}`);
 }
 
-main().catch((error) => {
+main().finally(closeFixtureDb).catch((error) => {
   console.error("F19 fixture provisioning failed:", error instanceof Error ? error.message : error);
   process.exit(1);
 });
