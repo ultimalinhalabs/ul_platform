@@ -5,6 +5,7 @@ import { requirePermission } from "../../middleware/requirePermission.js";
 import { requirePlatformMembership } from "../../middleware/platformContext.js";
 import { rateLimit } from "../../middleware/rateLimit.js";
 import { requirePlatformPermission } from "../../middleware/requirePlatformPermission.js";
+import { credentialInventoryQuerySchema, listCredentialInventory } from "../../modules/apiKeys/inventory.js";
 import { createApiKeySchema, createPlatformApiKeySchema } from "../../modules/apiKeys/schemas.js";
 import {
   createOrganizationApiKey,
@@ -123,6 +124,21 @@ apiKeysRouter.get(
   requirePlatformPermission("platform.credential.read"),
   asyncHandler(async (_req, res) => {
     ok(res, await listPlatformApiKeys());
+  }),
+);
+
+/**
+ * Audit 2026-10-23 — metadata inventory of EVERY credential (all classes, all organizations): the only way to see
+ * organization keys without being a member of each organization. Same permission as the listing above (no new
+ * permission); read-only; masked key ids; each read is audited. See modules/apiKeys/inventory.ts.
+ */
+apiKeysRouter.get(
+  "/platform/credentials/inventory",
+  authenticate,
+  requirePlatformMembership(),
+  requirePlatformPermission("platform.credential.read"),
+  asyncHandler(async (req, res) => {
+    ok(res, await listCredentialInventory(credentialInventoryQuerySchema.parse(req.query), { userId: req.auth!.userId }));
   }),
 );
 
