@@ -94,7 +94,7 @@ async function main() {
   });
   const integrationA = await call("POST", `/organizations/${orgA.id}/api-keys`, ownerAToken, {
     applicationKey: "NA_PISTA",
-    scopes: ["catalog.read", "catalog.write"],
+    scopes: ["catalog.read", "catalog.write", "customer.read", "customer.write", "order.read", "order.write", "appointment.read", "appointment.write"],
   });
   const platformFacingB = await call("POST", `/organizations/${orgB.id}/api-keys`, ownerBToken, {
     applicationKey: "NA_PISTA",
