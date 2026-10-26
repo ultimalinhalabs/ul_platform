@@ -59,6 +59,12 @@ export const SERVICE_SCOPES = [
   { key: "catalog.read", description: "Read catalog data." },
   { key: "catalog.write", description: "Create/update catalog data." },
   { key: "customer.read", description: "Read customer data." },
+  // Audit 2026-10-23 — per-resource scopes for personal data (also inserted by migration 0032).
+  { key: "customer.write", description: "Create, update or archive customer data." },
+  { key: "order.read", description: "Read orders." },
+  { key: "order.write", description: "Create orders and change their items or lifecycle." },
+  { key: "appointment.read", description: "Read appointments." },
+  { key: "appointment.write", description: "Book appointments and change their schedule or lifecycle." },
   { key: "payment.create", description: "Create a payment." },
   { key: "payment.read", description: "Read payment data." },
   { key: "report.generate", description: "Generate a report." },
@@ -80,7 +86,7 @@ export const SERVICE_SCOPES = [
  * never subscribe to or issue integration credentials for.
  */
 export const APPLICATION_SERVICE_SCOPES: Record<string, string[]> = {
-  NA_PISTA: ["event.publish", "usage.write", "usage.read", "catalog.read", "catalog.write", "customer.read", "credential.provision"],
+  NA_PISTA: ["event.publish", "usage.write", "usage.read", "catalog.read", "catalog.write", "customer.read", "customer.write", "order.read", "order.write", "appointment.read", "appointment.write", "credential.provision"],
   MICHA_EXPRESS: ["event.publish", "usage.write", "usage.read", "payment.create", "payment.read", "payment.confirm"],
   FOI: ["event.publish", "usage.write", "usage.read", "catalog.read"],
   QUALE_A_DICA: ["event.publish", "usage.write", "usage.read", "catalog.read", "report.generate"],

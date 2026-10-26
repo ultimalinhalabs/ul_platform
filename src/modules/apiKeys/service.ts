@@ -38,7 +38,7 @@ function shapeMetadata(row: MetadataRow, scopes: string[]) {
 }
 
 /** Batched — one query for every key's granted scopes instead of N+1 per listed key. */
-async function getGrantedScopeKeysByApiKeyId(apiKeyIds: string[]): Promise<Map<string, string[]>> {
+export async function getGrantedScopeKeysByApiKeyId(apiKeyIds: string[]): Promise<Map<string, string[]>> {
   const map = new Map<string, string[]>();
   if (apiKeyIds.length === 0) return map;
 
