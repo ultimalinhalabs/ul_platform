@@ -232,6 +232,13 @@
       "when": 1792885195616,
       "tag": "0032_service_scopes_per_resource",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1793137998620,
+      "tag": "0033_interface_scopes",
+      "breakpoints": true
     }
   ]
 }

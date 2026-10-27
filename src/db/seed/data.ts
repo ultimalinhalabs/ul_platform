@@ -65,6 +65,9 @@ export const SERVICE_SCOPES = [
   { key: "order.write", description: "Create orders and change their items or lifecycle." },
   { key: "appointment.read", description: "Read appointments." },
   { key: "appointment.write", description: "Book appointments and change their schedule or lifecycle." },
+  // Interface credential (2026-10-27): create-only scopes for a customer-facing interface (also inserted by migration 0033).
+  { key: "order.create", description: "Create orders only (no confirm/cancel, no listing; Na Pista: read back only the orders this key created)." },
+  { key: "customer.create", description: "Create customers only (no reading or changing them)." },
   { key: "payment.create", description: "Create a payment." },
   { key: "payment.read", description: "Read payment data." },
   { key: "report.generate", description: "Generate a report." },
@@ -86,7 +89,7 @@ export const SERVICE_SCOPES = [
  * never subscribe to or issue integration credentials for.
  */
 export const APPLICATION_SERVICE_SCOPES: Record<string, string[]> = {
-  NA_PISTA: ["event.publish", "usage.write", "usage.read", "catalog.read", "catalog.write", "customer.read", "customer.write", "order.read", "order.write", "appointment.read", "appointment.write", "credential.provision"],
+  NA_PISTA: ["event.publish", "usage.write", "usage.read", "catalog.read", "catalog.write", "customer.read", "customer.write", "order.read", "order.write", "appointment.read", "appointment.write", "order.create", "customer.create", "credential.provision"],
   MICHA_EXPRESS: ["event.publish", "usage.write", "usage.read", "payment.create", "payment.read", "payment.confirm"],
   FOI: ["event.publish", "usage.write", "usage.read", "catalog.read"],
   QUALE_A_DICA: ["event.publish", "usage.write", "usage.read", "catalog.read", "report.generate"],
